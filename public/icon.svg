@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="128" fill="#171717"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" stroke="#f59e0b" stroke-width="8" opacity="0.3"/>
+  <path d="M256 96c-44 55-88 121-88 184 0 66 39 120 88 136 49-16 88-70 88-136 0-63-44-129-88-184z" fill="#f59e0b"/>
+  <path d="M256 192c-22 28-44 61-44 92 0 33 20 60 44 68 24-8 44-35 44-68 0-31-22-64-44-92z" fill="#ef4444"/>
+  <text x="256" y="470" font-family="sans-serif" font-size="36" font-weight="900" fill="#ffffff" text-anchor="middle">TONY'S KITCHEN</text>
+</svg>

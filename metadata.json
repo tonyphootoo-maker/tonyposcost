@@ -1,0 +1,6 @@
+{
+  "name": "Tony's Kitchen - Restaurant POS & Food Cost System",
+  "description": "Complete offline-first Thai restaurant POS and Food Cost management platform with menu engineering, recipe costing, kitchen tickets, table management, and financial reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

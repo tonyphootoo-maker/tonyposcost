@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Sarabun', 'Noto Sans Thai', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --bg-app: #FFFBF5;
+    --bg-card: #FFFFFF;
+    --color-primary: #F97316;
+    --color-primary-hover: #EA580C;
+    --color-danger: #DC2626;
+    --color-danger-soft: #FEE2E2;
+    --color-yellow: #FACC15;
+    --color-yellow-soft: #FEF9C3;
+    --color-border: #FED7AA;
+    --color-text: #1F2937;
+    --color-muted: #6B7280;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #FFFBF5;
+    color: #1F2937;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    touch-action: manipulation;
+  }
+
+  /* Accessible touch targets (min 44px) */
+  button, input, select, textarea {
+    touch-action: manipulation;
+  }
+}
+
+/* Warm subtle shadows and card styling */
+.card-warm {
+  background-color: #FFFFFF;
+  border: 1px solid #FED7AA;
+  border-radius: 0.75rem; /* rounded-xl */
+  box-shadow: 0 1px 3px 0 rgba(249, 115, 22, 0.05), 0 1px 2px -1px rgba(249, 115, 22, 0.05);
+}
+
+.card-warm-hover {
+  transition: all 0.15s ease-in-out;
+}
+.card-warm-hover:hover {
+  border-color: #F97316;
+  box-shadow: 0 4px 6px -1px rgba(249, 115, 22, 0.1), 0 2px 4px -2px rgba(249, 115, 22, 0.1);
+}
+
+/* Scrollbars with warm tones */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #FFFBF5;
+}
+::-webkit-scrollbar-thumb {
+  background: #FED7AA;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #F97316;
+}
+
+/* Thermal printer receipt styles */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #printable-receipt, #printable-receipt * {
+    visibility: visible;
+  }
+  #printable-receipt {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100% !important;
+    max-width: 80mm !important;
+    margin: 0 auto;
+    padding: 2mm !important;
+    background: white !important;
+    color: black !important;
+    box-shadow: none !important;
+    font-size: 12px;
+  }
+  .no-print {
+    display: none !important;
+  }
+}

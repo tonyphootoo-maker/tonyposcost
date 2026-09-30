@@ -1,0 +1,19 @@
+{
+  "name": "Tony's Kitchen",
+  "short_name": "Tony's Kitchen",
+  "description": "ระบบขายหน้าร้าน (POS) และบริหารต้นทุนอาหาร (Food Cost) ร้านอาหารไทย Offline 100%",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#FFFBF5",
+  "theme_color": "#F97316",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
