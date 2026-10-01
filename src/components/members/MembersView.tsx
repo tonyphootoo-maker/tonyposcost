@@ -29,7 +29,7 @@ export const MembersView: React.FC = () => {
     name: string;
     phone: string;
     points: number;
-    tier: 'bronze' | 'silver' | 'gold' | 'vip';
+    tier: Member['tier'];
     notes: string;
   }>({
     code: `TK-${Math.floor(1000 + Math.random() * 9000)}`,

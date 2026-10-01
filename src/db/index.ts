@@ -137,6 +137,8 @@ export async function dbGetAll<T>(storeName: DBStoreName): Promise<T[]> {
   }
 }
 
+const writeDebounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
 export async function dbPut<T>(storeName: DBStoreName, value: T): Promise<boolean> {
   try {
     const db = await getDB();
@@ -147,6 +149,29 @@ export async function dbPut<T>(storeName: DBStoreName, value: T): Promise<boolea
     notifyToast('error', `เกิดข้อผิดพลาดในการบันทึกข้อมูล (${storeName})`, `Failed to save record (${storeName})`);
     return false;
   }
+}
+
+/**
+ * Auto-save helper with ~300ms debounce batching to avoid unnecessary disk I/O on keystrokes
+ */
+export function dbPutDebounced<T extends { id: string }>(
+  storeName: DBStoreName,
+  value: T,
+  delayMs = 300
+): Promise<boolean> {
+  const timerKey = `${storeName}_${value.id}`;
+  if (writeDebounceTimers.has(timerKey)) {
+    clearTimeout(writeDebounceTimers.get(timerKey)!);
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(async () => {
+      writeDebounceTimers.delete(timerKey);
+      const ok = await dbPut(storeName, value);
+      resolve(ok);
+    }, delayMs);
+    writeDebounceTimers.set(timerKey, timer);
+  });
 }
 
 export async function dbDelete(storeName: DBStoreName, key: string): Promise<boolean> {
@@ -194,6 +219,19 @@ export async function dbQueryByIndex<T>(
 export async function exportDatabaseToJSON(): Promise<string> {
   try {
     const db = await getDB();
+
+    // 1) Update lastBackupAt timestamp in current settings
+    const nowIso = new Date().toISOString();
+    try {
+      const currentSettings = (await db.get('settings', 'current_settings')) as RestaurantSettings | undefined;
+      if (currentSettings) {
+        currentSettings.lastBackupAt = nowIso;
+        await db.put('settings', currentSettings);
+      }
+    } catch {
+      // ignore
+    }
+
     const stores: DBStoreName[] = [
       'settings',
       'ingredients',
@@ -212,13 +250,14 @@ export async function exportDatabaseToJSON(): Promise<string> {
     const data: Record<string, unknown> = {
       app: 'tonys-kitchen',
       version: 1,
-      exportedAt: new Date().toISOString(),
+      exportedAt: nowIso,
     };
 
     for (const store of stores) {
       data[store] = await db.getAll(store);
     }
 
+    notifyToast('success', 'ส่งออกไฟล์สำรองข้อมูลสำเร็จ', 'Database backup exported');
     return JSON.stringify(data, null, 2);
   } catch (error) {
     console.error('[DB Export Error]:', error);
@@ -233,6 +272,13 @@ export async function importDatabaseFromJSON(jsonString: string): Promise<boolea
     const data = JSON.parse(jsonString);
     if (!data || typeof data !== 'object') {
       throw new Error('Invalid JSON backup file');
+    }
+
+    // Validate structure: must have at least key stores
+    const knownStores = ['settings', 'ingredients', 'recipes', 'products', 'orders', 'expenses'];
+    const hasAnyStore = knownStores.some((k) => Array.isArray(data[k]));
+    if (!hasAnyStore && !data.version) {
+      throw new Error('Invalid backup schema: missing database stores');
     }
 
     const db = await getDB();
@@ -295,6 +341,7 @@ export const DEFAULT_SETTINGS: RestaurantSettings = {
   language: 'th',
   defaultTableZone: 'indoor',
   soundEnabled: true,
+  textSize: 'large', // Default: ใหญ่ (115%)
 };
 
 export const INITIAL_CATEGORIES: ProductCategory[] = [
@@ -946,12 +993,35 @@ export const INITIAL_EXPENSES: Expense[] = [
   },
 ];
 
+export const CURRENT_SCHEMA_VERSION = 1;
+
+/**
+ * Migration function to upgrade data between schema versions safely
+ */
+export async function migrateSchemaIfNeeded(db: IDBPDatabase, metaRecord: Record<string, unknown>): Promise<void> {
+  const currentVersion = (metaRecord.schemaVersion as number) || 1;
+  if (currentVersion >= CURRENT_SCHEMA_VERSION) {
+    return;
+  }
+
+  try {
+    // Sequential version migrations if needed in future versions
+    metaRecord.schemaVersion = CURRENT_SCHEMA_VERSION;
+    metaRecord.migratedAt = new Date().toISOString();
+    await db.put('meta', metaRecord);
+  } catch (err) {
+    console.error('[DB Migration Error]:', err);
+    notifyToast('error', 'เกิดข้อผิดพลาดในการอัปเกรดโครงสร้างฐานข้อมูล', 'Failed to migrate database schema');
+  }
+}
+
 // Initialize and seed database if not yet populated
 export async function initializeDatabase(forceReset: boolean = false): Promise<void> {
   const db = await getDB();
   const meta = await db.get('meta', 'app_meta');
 
   if (meta && !forceReset) {
+    await migrateSchemaIfNeeded(db, meta as Record<string, unknown>);
     return; // Already initialized
   }
 

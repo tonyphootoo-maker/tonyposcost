@@ -357,20 +357,44 @@ export const TableFloorView: React.FC<TableFloorViewProps> = ({
                 />
               </div>
 
-              <div className="flex justify-end gap-2 pt-3 border-t border-neutral-800">
-                <button
-                  type="button"
-                  onClick={() => setIsEditModalOpen(false)}
-                  className="px-3 py-1.5 bg-neutral-800 text-neutral-300 rounded-lg"
-                >
-                  {t.cancel}
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold rounded-lg"
-                >
-                  {t.save}
-                </button>
+              <div className="flex justify-between items-center gap-2 pt-3 border-t border-neutral-800">
+                {editingTable ? (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const activeOrder = orders.find(
+                        (o) => o.tableId === editingTable.id && (o.status === 'open' || o.status === 'kitchen_preparing' || o.status === 'served')
+                      );
+                      if (activeOrder || editingTable.status === 'occupied') {
+                        alert('ไม่สามารถลบโต๊ะนี้ได้เนื่องจากมีลูกค้าหรือมีบิลเปิดค้างอยู่ (กรุณาคิดเงินหรือย้ายโต๊ะก่อนลบ)');
+                        return;
+                      }
+                      if (!confirm(`คุณต้องการลบโต๊ะ "${editingTable.name}" หรือไม่?`)) return;
+                      await dbDelete('tables', editingTable.id);
+                      setIsEditModalOpen(false);
+                      await loadData();
+                    }}
+                    className="px-3 py-1.5 bg-rose-950/40 hover:bg-rose-900 border border-rose-800 text-rose-300 rounded-lg text-xs"
+                  >
+                    ลบโต๊ะนี้
+                  </button>
+                ) : <div />}
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditModalOpen(false)}
+                    className="px-3 py-1.5 bg-neutral-800 text-neutral-300 rounded-lg"
+                  >
+                    {t.cancel}
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold rounded-lg"
+                  >
+                    {t.save}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

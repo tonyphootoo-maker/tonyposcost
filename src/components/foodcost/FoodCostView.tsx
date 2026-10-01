@@ -295,7 +295,7 @@ export const FoodCostView: React.FC<FoodCostViewProps> = ({ onRecipesUpdated }) 
     }));
   };
 
-  const handleUpdateExtraCost = (index: number, field: keyof ExtraCost, val: any) => {
+  const handleUpdateExtraCost = (index: number, field: keyof ExtraCost, val: string | number) => {
     setFormData((prev) => {
       const extras = [...(prev.extraCosts || [])];
       extras[index] = { ...extras[index], [field]: val };

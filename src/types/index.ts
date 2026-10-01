@@ -208,6 +208,7 @@ export interface RestaurantSettings {
   restaurantNameTh: string;
   restaurantNameEn: string;
   name?: string;
+  shopName?: string;
   tagline: string;
   addressTh: string;
   addressEn: string;
@@ -222,12 +223,30 @@ export interface RestaurantSettings {
   vatInclusive: boolean;
   serviceChargeEnabled: boolean;
   serviceChargeRate: number;
+  serviceChargeCountAsRevenue?: boolean;
   receiptHeaderMessage: string;
   receiptFooterMessage: string;
   receiptWidth: '58mm' | '80mm';
   language: Language;
   defaultTableZone: string;
   soundEnabled: boolean;
+  // Food cost & operations settings
+  defaultTargetFoodCostPercent?: number;
+  defaultOverheadPercent?: number;
+  priceRounding?: 1 | 5 | 10;
+  platforms?: PlatformConfig[];
+  ingredientCategories?: string[];
+  recipeCategories?: string[];
+  expenseCategories?: string[];
+  printerStations?: PrinterStation[];
+  paymentMethods?: PaymentMethodConfig[];
+  loyalty?: LoyaltySettings;
+  lastBackupAt?: string;
+  textSize?: 'normal' | 'large' | 'xlarge'; // ปกติ (100%) / ใหญ่ (115%, default) / ใหญ่มาก (130%)
+  // Shared sub-objects for calc module
+  vat?: VatSettings;
+  serviceCharge?: ServiceChargeSettings;
+  receipt?: ReceiptSettings;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +332,8 @@ export interface Product {
   kitchenStation: 'kitchen' | 'bar' | 'grill' | 'dessert';
   variants?: ProductVariant[];
   tags?: string[];
+  groupId?: string;
+  groupName?: string;
 }
 
 export type TableShape = 'rect' | 'round';
@@ -353,7 +374,7 @@ export interface Zone {
 export type OrderType = 'dine-in' | 'takeaway' | 'delivery' | 'dine_in';
 export type OrderMode = 'table' | 'pay-now';
 export type OrderStatus = 'open' | 'paid' | 'cancelled' | 'kitchen_preparing' | 'served';
-export type KitchenStatus = 'pending' | 'cooking' | 'ready' | 'served';
+export type KitchenStatus = 'pending' | 'cooking' | 'ready' | 'served' | 'preparing';
 export type DeliveryPlatform = 'grab' | 'lineman' | 'shopeefood' | 'foodpanda' | 'robinhood' | 'direct';
 
 export interface OrderModifierSnapshot {
@@ -472,6 +493,7 @@ export interface Order {
   promotionName?: string;
   memberId?: string;
   memberName?: string;
+  memberPhone?: string;
   memberPointsEarned?: number;
   pointsEarned?: number;
   pointsRedeemed?: number;
@@ -505,7 +527,7 @@ export interface Member {
   note?: string;
   notes?: string;
   code: string;
-  tier: 'bronze' | 'silver' | 'gold' | 'vip';
+  tier: 'bronze' | 'silver' | 'gold' | 'vip' | 'platinum';
   visitCount: number;
   updatedAt: string;
 }

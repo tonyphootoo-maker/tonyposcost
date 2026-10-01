@@ -65,6 +65,13 @@ function AppContent() {
     setActiveShift(open || null);
   };
 
+  // Text size scaling on <html>
+  useEffect(() => {
+    const size = settings?.textSize || 'large';
+    document.documentElement.classList.remove('text-size-normal', 'text-size-large', 'text-size-xlarge');
+    document.documentElement.classList.add(`text-size-${size}`);
+  }, [settings?.textSize]);
+
   const updatePendingOrdersCount = async () => {
     try {
       const orders = await dbGetAll<Order>('orders');
@@ -110,14 +117,15 @@ function AppContent() {
   }
 
   return (
-    <div className="min-h-screen bg-[#FFFBF5] text-[#1F2937] flex flex-row">
-      {/* Persistent Left Sidebar on Desktop / Slide-out on Mobile */}
+    <div className="min-h-screen bg-[#FFF8EE] text-[#111827] flex flex-row">
+      {/* Persistent Left Sidebar on Desktop / Slide-out on Mobile (Hidden on Sell screen) */}
       <Sidebar
         activeTab={activeTab}
         setActiveTab={handleTabChange}
         isOpenMobile={isMobileMenuOpen}
         onCloseMobile={() => setIsMobileMenuOpen(false)}
         pendingOrdersCount={pendingOrdersCount}
+        hideDesktopSidebar={activeTab === 'sell'}
       />
 
       {/* Main Content Column */}
@@ -132,8 +140,8 @@ function AppContent() {
           settings={settings}
         />
 
-        {/* Dynamic Main View Area */}
-        <main className="flex-1 p-4 md:p-6 max-w-7xl mx-auto w-full">
+        {/* Dynamic Main View Area (Full screen on Sell view) */}
+        <main className={`flex-1 w-full ${activeTab === 'sell' ? 'p-0 overflow-hidden' : 'p-4 md:p-6 max-w-7xl mx-auto'}`}>
           {/* Sell / ขาย Group */}
           {activeTab === 'sell' && (
             <PosView
@@ -142,6 +150,9 @@ function AppContent() {
               onOpenTableFloor={() => setActiveTab('tables')}
               selectedTableForPos={selectedTableForPos}
               existingOrderForPos={existingOrderForPos}
+              onOpenNavDrawer={() => setIsMobileMenuOpen(true)}
+              onOpenBillsHistory={() => setActiveTab('bills')}
+              pendingOrdersCount={pendingOrdersCount}
             />
           )}
 

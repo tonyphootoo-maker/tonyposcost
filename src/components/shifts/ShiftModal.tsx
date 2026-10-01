@@ -116,6 +116,18 @@ export const ShiftModal: React.FC<ShiftModalProps> = ({
   const handleCloseShift = async () => {
     if (!activeShift) return;
 
+    // Check for open bills in this shift (Section 10 Edge Cases)
+    const shiftOrders = await dbQueryByIndex<Order>('orders', 'by-shiftId', activeShift.id);
+    const openOrders = shiftOrders.filter((o) => o.status === 'open' || o.status === 'kitchen_preparing');
+    if (openOrders.length > 0) {
+      const confirmClose = window.confirm(
+        language === 'th'
+          ? `⚠️ คำเตือน: ยังมีบิลค้างชำระอยู่ ${openOrders.length} บิลในกะนี้!\nคุณต้องการปิดกะขายนี้หรือไม่? (แนะนำให้คิดเงินหรือเคลียร์บิลที่เปิดอยู่ก่อนปิดกะ)`
+          : `⚠️ Warning: There are ${openOrders.length} open unpaid orders in this shift!\nDo you still want to close this shift?`
+      );
+      if (!confirmClose) return;
+    }
+
     const expectedCash = activeShift.startingCash + currentShiftLiveStats.cashSales;
     const diff = actualCashInput - expectedCash;
 

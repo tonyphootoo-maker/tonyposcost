@@ -3,31 +3,60 @@
 @layer base {
   :root {
     --font-sans: 'Sarabun', 'Noto Sans Thai', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    --bg-app: #FFFBF5;
-    --bg-card: #FFFFFF;
-    --color-primary: #F97316;
-    --color-primary-hover: #EA580C;
-    --color-danger: #DC2626;
-    --color-danger-soft: #FEE2E2;
-    --color-yellow: #FACC15;
-    --color-yellow-soft: #FEF9C3;
-    --color-border: #FED7AA;
-    --color-text: #1F2937;
-    --color-muted: #6B7280;
+    /* Section 3A Exact Color Tokens */
+    --bg-app: #FFF8EE;            /* bg ขาวนวล creamy ivory */
+    --surface: #FFFFFF;           /* cards, tiles, panels, dialogs */
+    --surface-cream: #FFF3E0;     /* subtle section backgrounds, empty states, zebra rows */
+    --border-subtle: #FED7AA;     /* default border */
+    --border-strong: #FDBA74;     /* strong border for tiles/inputs */
+    --text-main: #111827;         /* main text */
+    --text-secondary: #374151;    /* secondary text */
+    --text-muted: #6B7280;        /* only for non-essential hints, never below 14px */
+    --primary-orange: #F97316;    /* indicators, icons, outlines */
+    --primary-strong: #EA580C;    /* filled buttons, white text, >=18px semibold */
+    --primary-dark: #9A3412;      /* text on orange-soft backgrounds */
+    --primary-soft: #FFEDD5;      /* active tabs, pressed tiles */
+    --danger-red: #DC2626;        /* filled/borders */
+    --danger-strong: #B91C1C;     /* red text */
+    --danger-soft: #FEE2E2;       /* red soft */
+    --highlight-yellow: #FACC15;  /* badges, highlights */
+    --highlight-soft: #FEF9C3;    /* highlight background */
+    --toast-success-bg: #DCFCE7;  /* soft green */
+    --toast-success-text: #166534;/* dark green */
+  }
+
+  /* Root Font Size Scaling (Section 3C: Root font size 17px; default ใหญ่ 115% = 19.55px) */
+  html {
+    font-size: 19.55px; /* Default: ใหญ่ (115%) */
+  }
+  html.text-size-normal {
+    font-size: 17px; /* ปกติ (100%) */
+  }
+  html.text-size-large {
+    font-size: 19.55px; /* ใหญ่ (115%) */
+  }
+  html.text-size-xlarge {
+    font-size: 22.1px; /* ใหญ่มาก (130%) */
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #FFFBF5;
-    color: #1F2937;
+    background-color: #FFF8EE;
+    color: #111827;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     touch-action: manipulation;
   }
 
-  /* Accessible touch targets (min 44px) */
+  /* Visible focus ring (Section 3B: 3px orange outline) */
+  :focus-visible {
+    outline: 3px solid #F97316;
+    outline-offset: 1px;
+  }
+
   button, input, select, textarea {
     touch-action: manipulation;
+    font-family: inherit;
   }
 }
 
@@ -36,15 +65,15 @@
   background-color: #FFFFFF;
   border: 1px solid #FED7AA;
   border-radius: 0.75rem; /* rounded-xl */
-  box-shadow: 0 1px 3px 0 rgba(249, 115, 22, 0.05), 0 1px 2px -1px rgba(249, 115, 22, 0.05);
+  box-shadow: 0 1px 2px 0 rgba(249, 115, 22, 0.04);
 }
 
 .card-warm-hover {
   transition: all 0.15s ease-in-out;
 }
 .card-warm-hover:hover {
-  border-color: #F97316;
-  box-shadow: 0 4px 6px -1px rgba(249, 115, 22, 0.1), 0 2px 4px -2px rgba(249, 115, 22, 0.1);
+  border-color: #FDBA74;
+  box-shadow: 0 2px 4px -1px rgba(249, 115, 22, 0.08);
 }
 
 /* Scrollbars with warm tones */
@@ -53,7 +82,7 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #FFFBF5;
+  background: #FFF8EE;
 }
 ::-webkit-scrollbar-thumb {
   background: #FED7AA;

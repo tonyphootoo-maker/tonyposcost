@@ -14,6 +14,9 @@ import {
   Promotion,
   Member,
   Shift,
+  Expense,
+  RecurringExpense,
+  RestaurantSettings,
 } from '../types';
 
 // ============================================================================
@@ -512,28 +515,8 @@ export function analyzeDeliveryPlatform(
   };
 }
 
-// ============================================================================
-// n) Display Formatting (Money 2 Decimals, Percent 1 Decimal)
-// ============================================================================
-
-const thCurrencyFormatter = new Intl.NumberFormat('th-TH', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-
-export function formatMoney(amount: number | null | undefined): string {
-  if (typeof amount !== 'number' || isNaN(amount)) {
-    return '-';
-  }
-  return thCurrencyFormatter.format(amount);
-}
-
-export function formatPercent(percent: number | null | undefined): string {
-  if (typeof percent !== 'number' || isNaN(percent)) {
-    return '-';
-  }
-  return `${percent.toFixed(1)}%`;
-}
+import { formatMoney, formatPercent } from './format';
+export { formatMoney, formatPercent };
 
 // ============================================================================
 // o & p) POS Bill Calculation & Promotions Evaluation
@@ -928,3 +911,370 @@ export function calcOrderReportingCost(order: Order): OrderReportingCost {
     missingItemsCount,
   };
 }
+
+// ============================================================================
+// Section 8: Reports, Recurring Expenses Spread & P&L Calculation Rules
+// ============================================================================
+
+/**
+ * คำนวณยอดขายสุทธิของบิลตามกฎ Food Cost (Net Sales / Revenue per plate rule h/o)
+ * สูตร: ยอดขายหักส่วนลด (ex-VAT) + (Service Charge ถ้าตั้งค่าให้นับเป็นรายได้)
+ */
+export function calcOrderNetRevenue(order: Order, settings: Settings | RestaurantSettings | null): number {
+  const vatEnabled = settings?.vat?.enabled ?? (settings as { vatEnabled?: boolean })?.vatEnabled ?? false;
+  const vatRate = ((settings?.vat?.ratePercent ?? (settings as { vatRate?: number })?.vatRate) ?? 7) / 100;
+  const priceIncludesVat = settings?.vat?.priceIncludesVat ?? (settings as { vatInclusive?: boolean })?.vatInclusive ?? true;
+  const countAsRevenue = settings?.serviceCharge?.countAsRevenue ?? (settings as { serviceChargeCountAsRevenue?: boolean })?.serviceChargeCountAsRevenue ?? false;
+
+  const total = order.totalAmount ?? 0;
+  const serviceCharge = order.serviceChargeAmount ?? 0;
+  const vat = order.vatAmount ?? 0;
+
+  // ถ้าระบบมี snapshot vat และ service charge บันทึกไว้แล้ว
+  if (vatEnabled && priceIncludesVat) {
+    // ราคาขายรวม VAT: ถอด VAT ออกจากยอดอาหาร
+    const subtotalWithVat = (order.subtotal ?? total) - (order.discountTotal ?? 0);
+    const exVatSubtotal = subtotalWithVat / (1 + vatRate);
+    const exVatService = countAsRevenue ? serviceCharge / (1 + vatRate) : 0;
+    return exVatSubtotal + exVatService;
+  } else if (vatEnabled && !priceIncludesVat) {
+    // ราคาขายแยก VAT: ยอดขายก่อน VAT คือ subtotal หักส่วนลด
+    const exVatSubtotal = (order.subtotal ?? (total - vat - serviceCharge)) - (order.discountTotal ?? 0);
+    const exVatService = countAsRevenue ? serviceCharge : 0;
+    return exVatSubtotal + exVatService;
+  }
+
+  // ไม่เปิดใช้งาน VAT
+  const baseSubtotal = (order.subtotal ?? total) - (order.discountTotal ?? 0);
+  return baseSubtotal + (countAsRevenue ? serviceCharge : 0);
+}
+
+/**
+ * คำนวณค่าธรรมเนียม GP เดลิเวอรีของออเดอร์
+ * สูตร: ยอดรวมออเดอร์เดลิเวอรี × (effective GP% ÷ 100) โดยหาก gpHasVat: effective GP = gp% × 1.07
+ */
+export function calcOrderDeliveryGPFee(order: Order, settings: Settings | RestaurantSettings | null): number {
+  if (order.orderType !== 'delivery') return 0;
+
+  const platformId = order.platformId || (order as { platform?: string }).platform;
+  const platforms = settings?.platforms || [];
+  const matched = platforms.find((p) => p.id === platformId);
+
+  const gpPercent = matched?.gpPercent ?? 30;
+  const gpHasVat = matched?.gpHasVat ?? false;
+  const effectiveGP = gpHasVat ? gpPercent * 1.07 : gpPercent;
+
+  return (order.totalAmount || 0) * (effectiveGP / 100);
+}
+
+/**
+ * คำนวณการกระจายรายจ่ายประจำเดือน (Recurring Expense Spread Rule)
+ * กฎ: ยอดเงินต่อเดือนจะถูกเกลี่ยเฉลี่ยหารตามจำนวนวันของเดือนนั้นๆ (amountPerMonth ÷ daysInMonth)
+ * เมื่อดูงบวัน/เดือน/ปี จะนับเฉพาะวันที่รายจ่ายมีผล (startDate ถึง endDate ถ้ามี)
+ */
+export function calcSpreadRecurringExpenses(
+  recurringExpenses: RecurringExpense[],
+  startDateStr: string,
+  endDateStr: string
+): number {
+  if (!recurringExpenses || recurringExpenses.length === 0) return 0;
+
+  const start = new Date(startDateStr);
+  const end = new Date(endDateStr);
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return 0;
+
+  let totalAllocated = 0;
+  const current = new Date(start);
+
+  // วนลูปทีละวันในช่วงที่เลือก
+  while (current <= end) {
+    const year = current.getFullYear();
+    const month = current.getMonth();
+    // จำนวนวันทั้งหมดในเดือนของวันปัจจุบัน
+    const daysInCurrentMonth = new Date(year, month + 1, 0).getDate();
+    const currentDateStr = current.toISOString().split('T')[0];
+
+    for (const rec of recurringExpenses) {
+      const recStart = rec.startDate || '1970-01-01';
+      const recEnd = rec.endDate || '2099-12-31';
+
+      if (currentDateStr >= recStart && currentDateStr <= recEnd) {
+        const dailyRate = (rec.amountPerMonth || 0) / daysInCurrentMonth;
+        totalAllocated += dailyRate;
+      }
+    }
+
+    current.setDate(current.getDate() + 1);
+  }
+
+  return Math.round(totalAllocated * 100) / 100;
+}
+
+export interface PeriodPnLResult {
+  grossSales: number;
+  discounts: number;
+  serviceCharge: number;
+  vat: number;
+  netRevenue: number;
+  foodCost: number;
+  hasMissingFoodCost: boolean;
+  missingCostItemsCount: number;
+  grossProfit: number;
+  grossMarginPct: number | null;
+  foodCostPct: number | null;
+  deliveryFees: number;
+  directExpenses: number;
+  recurringExpensesAllocation: number;
+  totalOperatingExpenses: number;
+  netProfit: number;
+  netMarginPct: number | null;
+  paidBillsCount: number;
+  avgBillAmount: number | null;
+  cancelledTotal: number;
+}
+
+/**
+ * คำนวณงบกำไรขาดทุน (P&L) ตามกฎ Section 8.2
+ * Net revenue (ex-VAT) − Food cost = Gross profit
+ * − Delivery platform fees (GP) − Operating expenses = Net profit / loss
+ */
+export function calcPeriodPnL(
+  paidOrders: Order[],
+  allOrdersInPeriod: Order[],
+  directExpenses: Expense[],
+  recurringExpenses: RecurringExpense[],
+  startDateStr: string,
+  endDateStr: string,
+  settings: Settings | RestaurantSettings | null
+): PeriodPnLResult {
+  let grossSales = 0;
+  let discounts = 0;
+  let serviceCharge = 0;
+  let vat = 0;
+  let netRevenue = 0;
+  let foodCost = 0;
+  let hasMissingFoodCost = false;
+  let missingCostItemsCount = 0;
+  let deliveryFees = 0;
+
+  for (const order of paidOrders) {
+    grossSales += order.totalAmount || 0;
+    discounts += order.discountTotal || 0;
+    serviceCharge += order.serviceChargeAmount || 0;
+    vat += order.vatAmount || 0;
+
+    const net = calcOrderNetRevenue(order, settings);
+    netRevenue += net;
+
+    const costInfo = calcOrderReportingCost(order);
+    if (costInfo.hasMissingCost) {
+      hasMissingFoodCost = true;
+      missingCostItemsCount += costInfo.missingItemsCount;
+    }
+    foodCost += costInfo.totalCost ?? 0;
+
+    deliveryFees += calcOrderDeliveryGPFee(order, settings);
+  }
+
+  // Cancelled bills total
+  const cancelledOrders = allOrdersInPeriod.filter((o) => (o.status as string) === 'cancelled' || (o.status as string) === 'voided');
+  const cancelledTotal = cancelledOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+
+  // Direct operating expenses
+  const directExpTotal = directExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+
+  // Spread recurring expenses allocation
+  const recurringAllocTotal = calcSpreadRecurringExpenses(recurringExpenses, startDateStr, endDateStr);
+  const totalOperatingExpenses = directExpTotal + recurringAllocTotal;
+
+  // Gross profit & Net profit
+  const grossProfit = netRevenue - foodCost;
+  const grossMarginPct = netRevenue > 0 ? (grossProfit / netRevenue) * 100 : null;
+  const foodCostPct = netRevenue > 0 ? (foodCost / netRevenue) * 100 : null;
+
+  const netProfit = grossProfit - deliveryFees - totalOperatingExpenses;
+  const netMarginPct = netRevenue > 0 ? (netProfit / netRevenue) * 100 : null;
+
+  const paidBillsCount = paidOrders.length;
+  const avgBillAmount = paidBillsCount > 0 ? grossSales / paidBillsCount : null;
+
+  return {
+    grossSales,
+    discounts,
+    serviceCharge,
+    vat,
+    netRevenue,
+    foodCost,
+    hasMissingFoodCost,
+    missingCostItemsCount,
+    grossProfit,
+    grossMarginPct,
+    foodCostPct,
+    deliveryFees,
+    directExpenses: directExpTotal,
+    recurringExpensesAllocation: recurringAllocTotal,
+    totalOperatingExpenses,
+    netProfit,
+    netMarginPct,
+    paidBillsCount,
+    avgBillAmount,
+    cancelledTotal,
+  };
+}
+
+export type MenuEngineeringClass = 'star' | 'plowhorse' | 'puzzle' | 'dog';
+
+export interface MenuEngineeringItem {
+  id: string;
+  nameTh: string;
+  nameEn?: string;
+  quantitySold: number;
+  totalRevenue: number;
+  totalCost: number;
+  hasMissingCost: boolean;
+  unitProfit: number;
+  totalProfit: number;
+  classification: MenuEngineeringClass;
+  actionHint: {
+    th: string;
+    en: string;
+  };
+}
+
+/**
+ * วิเคราะห์ Menu Engineering Matrix (Section 8.2)
+ * ⭐ Star (ขายดี กำไรดี), 🐴 Plowhorse (ขายดี กำไรต่ำ), ❓ Puzzle (ขายน้อย กำไรดี), 🐶 Dog (ขายน้อย กำไรต่ำ)
+ */
+export function classifyMenuEngineering(
+  items: Array<{
+    id: string;
+    nameTh: string;
+    nameEn?: string;
+    quantitySold: number;
+    totalRevenue: number;
+    totalCost: number;
+    hasMissingCost?: boolean;
+  }>
+): {
+  items: MenuEngineeringItem[];
+  avgQuantitySold: number;
+  avgProfitPerUnit: number;
+} {
+  if (items.length === 0) {
+    return { items: [], avgQuantitySold: 0, avgProfitPerUnit: 0 };
+  }
+
+  const totalQuantity = items.reduce((sum, item) => sum + item.quantitySold, 0);
+  const totalProfitOverall = items.reduce((sum, item) => sum + (item.totalRevenue - item.totalCost), 0);
+
+  const avgQuantitySold = totalQuantity / items.length;
+  const avgProfitPerUnit = totalQuantity > 0 ? totalProfitOverall / totalQuantity : 0;
+
+  const resultItems: MenuEngineeringItem[] = items.map((item) => {
+    const totalProfit = item.totalRevenue - item.totalCost;
+    const unitProfit = item.quantitySold > 0 ? totalProfit / item.quantitySold : 0;
+
+    const isHighPopularity = item.quantitySold >= avgQuantitySold;
+    const isHighProfit = unitProfit >= avgProfitPerUnit;
+
+    let classification: MenuEngineeringClass;
+    let actionHint: { th: string; en: string };
+
+    if (isHighPopularity && isHighProfit) {
+      classification = 'star';
+      actionHint = {
+        th: 'รักษามาตรฐานสูตรและรสชาติ ให้ตำแหน่งเด่นที่สุดในเมนู',
+        en: 'Maintain recipe consistency & position prominently on menu',
+      };
+    } else if (isHighPopularity && !isHighProfit) {
+      classification = 'plowhorse';
+      actionHint = {
+        th: 'พิจารณาปรับขึ้นราคา 5-10 บ. หรือหาวิธีลดต้นทุน/ปรับ Portion',
+        en: 'Consider slight price raise or optimize portion / ingredient cost',
+      };
+    } else if (!isHighPopularity && isHighProfit) {
+      classification = 'puzzle';
+      actionHint = {
+        th: 'ให้พนักงานแนะนำลูกค้า, ทำป้ายแนะนำ, หรือจัดโปรโมชั่นเซ็ตคู่',
+        en: 'Train staff to recommend, add special badge, or create combo set',
+      };
+    } else {
+      classification = 'dog';
+      actionHint = {
+        th: 'พิจารณาถอดออกจากเมนูเพื่อลดสต็อกของสด หรือปรับสูตรใหม่',
+        en: 'Consider removing from menu to reduce waste or redesign recipe',
+      };
+    }
+
+    return {
+      id: item.id,
+      nameTh: item.nameTh,
+      nameEn: item.nameEn,
+      quantitySold: item.quantitySold,
+      totalRevenue: item.totalRevenue,
+      totalCost: item.totalCost,
+      hasMissingCost: item.hasMissingCost ?? false,
+      unitProfit,
+      totalProfit,
+      classification,
+      actionHint,
+    };
+  });
+
+  return {
+    items: resultItems,
+    avgQuantitySold,
+    avgProfitPerUnit,
+  };
+}
+
+/**
+ * สร้างข้อความสรุปยอดขายส่ง LINE (Section 8.2)
+ * ข้อความสั้นกระชับ ครบถ้วน พร้อมส่งต่อในกลุ่มร้านค้า
+ */
+export function generateLineSummaryText(
+  periodLabel: string,
+  pnl: PeriodPnLResult,
+  paymentBreakdown: {
+    cash: number;
+    promptpay: number;
+    card: number;
+    delivery: number;
+  },
+  top5Dishes: Array<{ name: string; quantity: number; revenue: number }>
+): string {
+  const lines: string[] = [];
+  lines.push(`📊 สรุปยอดขาย Tony's Kitchen`);
+  lines.push(`📅 ช่วงเวลา: ${periodLabel}`);
+  lines.push(`--------------------------------`);
+  lines.push(`💰 ยอดขายรวม: ฿${formatMoney(pnl.grossSales)}`);
+  lines.push(`🧾 จำนวนบิล: ${pnl.paidBillsCount} บิล (เฉลี่ย ฿${formatMoney(pnl.avgBillAmount ?? 0)}/บิล)`);
+  lines.push(``);
+  lines.push(`💳 ช่องทางการชำระเงิน:`);
+  lines.push(`  • เงินสด (Cash): ฿${formatMoney(paymentBreakdown.cash)}`);
+  lines.push(`  • พร้อมเพย์ (PromptPay): ฿${formatMoney(paymentBreakdown.promptpay)}`);
+  lines.push(`  • บัตร/โอน (Card/Transfer): ฿${formatMoney(paymentBreakdown.card)}`);
+  lines.push(`  • เดลิเวอรี (Delivery): ฿${formatMoney(paymentBreakdown.delivery)}`);
+  lines.push(`--------------------------------`);
+  lines.push(`🍲 ต้นทุนอาหาร (Food Cost): ฿${formatMoney(pnl.foodCost)} (${formatPercent(pnl.foodCostPct ?? 0)}%)`);
+  lines.push(`📈 กำไรขั้นต้น (Gross Profit): ฿${formatMoney(pnl.grossProfit)} (${formatPercent(pnl.grossMarginPct ?? 0)}%)`);
+  lines.push(`🛵 หัก GP เดลิเวอรี: -฿${formatMoney(pnl.deliveryFees)}`);
+  lines.push(`💸 ค่าใช้จ่ายดำเนินงาน: -฿${formatMoney(pnl.totalOperatingExpenses)}`);
+  lines.push(`💵 กำไรสุทธิ (Net Profit): ฿${formatMoney(pnl.netProfit)} (${formatPercent(pnl.netMarginPct ?? 0)}%)`);
+  lines.push(`--------------------------------`);
+  lines.push(`🏆 5 อันดับเมนูขายดี:`);
+
+  if (top5Dishes.length === 0) {
+    lines.push(`  (ยังไม่มีรายการขาย)`);
+  } else {
+    top5Dishes.forEach((d, idx) => {
+      lines.push(`  ${idx + 1}. ${d.name} (${d.quantity} จาน) - ฿${formatMoney(d.revenue)}`);
+    });
+  }
+
+  lines.push(`--------------------------------`);
+  lines.push(`📱 บันทึกจากระบบ Tony's Kitchen`);
+
+  return lines.join('\n');
+}
+

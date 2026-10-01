@@ -43,6 +43,7 @@ interface SidebarProps {
   isOpenMobile: boolean;
   onCloseMobile: () => void;
   pendingOrdersCount?: number;
+  hideDesktopSidebar?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -51,6 +52,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpenMobile,
   onCloseMobile,
   pendingOrdersCount = 0,
+  hideDesktopSidebar = false,
 }) => {
   const { t } = useTranslation();
 
@@ -166,19 +168,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <>
-      {/* Desktop Persistent Sidebar */}
-      <aside className="hidden lg:block w-64 shrink-0 h-screen sticky top-0 z-30">
-        {sidebarContent}
-      </aside>
+      {/* Desktop Persistent Sidebar (hidden on Sell screen) */}
+      {!hideDesktopSidebar && (
+        <aside className="hidden lg:block w-64 shrink-0 h-screen sticky top-0 z-30">
+          {sidebarContent}
+        </aside>
+      )}
 
-      {/* Mobile Drawer Backdrop & Slide-out */}
+      {/* Navigation Drawer Backdrop & Slide-out */}
       {isOpenMobile && (
-        <div className="lg:hidden fixed inset-0 z-50 flex">
+        <div className={`fixed inset-0 z-50 flex ${!hideDesktopSidebar ? 'lg:hidden' : ''}`}>
           <div
             className="fixed inset-0 bg-black/40 backdrop-blur-xs transition-opacity"
             onClick={onCloseMobile}
           />
-          <div className="relative w-72 max-w-[85vw] h-full shadow-2xl z-10">
+          <div className="relative w-72 max-w-[85vw] h-full shadow-2xl z-10 bg-white">
             {sidebarContent}
           </div>
         </div>

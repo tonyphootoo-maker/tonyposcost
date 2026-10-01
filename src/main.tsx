@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client';
-import App from './App.tsx';
+import App from './App';
 import './index.css';
 
 // Register PWA service worker for offline use (using relative path for GitHub Pages sub-path support)

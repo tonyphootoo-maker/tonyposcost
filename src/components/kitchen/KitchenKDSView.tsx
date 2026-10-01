@@ -45,6 +45,7 @@ export const KitchenKDSView: React.FC = () => {
 
     const nextStatus: Record<KitchenStatus, KitchenStatus> = {
       pending: 'cooking',
+      preparing: 'cooking',
       cooking: 'ready',
       ready: 'served',
       served: 'ready',

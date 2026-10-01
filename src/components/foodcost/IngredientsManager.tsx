@@ -284,7 +284,7 @@ export const IngredientsManager: React.FC<IngredientsManagerProps> = ({ onIngred
     }));
   };
 
-  const handleUpdateCustomUnit = (index: number, field: keyof CustomUnit, value: any) => {
+  const handleUpdateCustomUnit = (index: number, field: keyof CustomUnit, value: string | number) => {
     setFormData((prev) => {
       const updated = [...prev.customUnits];
       updated[index] = { ...updated[index], [field]: value };

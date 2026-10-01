@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Product, ProductCategory } from '../../types';
+import { Product, ProductCategory, Order, OrderLine } from '../../types';
 import { dbGetAll, dbPut, dbDelete } from '../../db';
 import { useTranslation } from '../../i18n';
 import { ProductMenuModal } from '../pos/ProductMenuModal';
@@ -54,6 +54,19 @@ export const ProductsManagementView: React.FC = () => {
   };
 
   const handleDelete = async (id: string, nameTh: string) => {
+    // Check if open orders contain this product (Section 10 Edge Cases)
+    const allOrders = await dbGetAll<Order>('orders');
+    const openOrdersUsingProduct = allOrders.filter(
+      (o: Order) =>
+        (o.status === 'open' || o.status === 'kitchen_preparing') &&
+        (o.items || o.lines || []).some((it: OrderLine) => it.productId === id)
+    );
+
+    if (openOrdersUsingProduct.length > 0) {
+      alert(`ไม่สามารถลบ "${nameTh}" ได้เนื่องจากมีบิลที่กำลังเปิดใช้งานสินค้าชิ้นนี้อยู่ ${openOrdersUsingProduct.length} บิล กรุณาคิดเงินหรือปิดบิลก่อน`);
+      return;
+    }
+
     if (!confirm(t.confirmDeleteMsg || `คุณต้องการลบ "${nameTh}" หรือไม่?`)) return;
     await dbDelete('products', id);
     loadData();
@@ -86,6 +99,13 @@ export const ProductsManagementView: React.FC = () => {
   };
 
   const handleDeleteCategory = async (catId: string, catName: string) => {
+    // Check if any product is using this category (Section 10 Edge Cases)
+    const productsInCat = products.filter((p) => p.categoryId === catId);
+    if (productsInCat.length > 0) {
+      alert(`ไม่สามารถลบหมวดหมู่ "${catName}" ได้เนื่องจากมีสินค้า ${productsInCat.length} รายการอยู่ในหมวดนี้ (กรุณาย้ายสินค้าหรือเปลี่ยนหมวดก่อนลบ)`);
+      return;
+    }
+
     if (!confirm(`คุณต้องการลบหมวดหมู่ "${catName}" หรือไม่?`)) return;
     await dbDelete('categories', catId);
     loadData();

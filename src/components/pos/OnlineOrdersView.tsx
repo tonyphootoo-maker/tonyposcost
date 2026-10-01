@@ -154,6 +154,15 @@ export const OnlineOrdersView: React.FC<OnlineOrdersViewProps> = ({ onOrderUpdat
         </div>
       </div>
 
+      {/* Honest Limitation Notice (Section 9) */}
+      <div className="bg-[#FFFBF5] border border-[#FED7AA] rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-[#6B7280]">
+        <AlertCircle className="w-4 h-4 text-orange-600 shrink-0 mt-0.5" />
+        <div>
+          <span className="font-bold text-[#1F2937]">สถานะกล่องข้อความออเดอร์ (Order Inbox):</span>{' '}
+          หน้าต่างนี้ทำหน้าที่เป็น Inbox และศูนย์รวมออเดอร์เดลิเวอรี/สั่งกลับบ้านของร้าน โดยระบบทำงานแบบ Local-First บนอุปกรณ์นี้ (ไม่มีเซิร์ฟเวอร์คลาวด์ภายนอก จึงไม่มีการเปิดรับออเดอร์สดจากลูกค้าผ่านหน้าเว็บสาธารณะ) พร้อมสำหรับการนำเข้าออเดอร์ผ่าน JSON และเชื่อมต่อระบบสั่งอาหารของร้านในอนาคต
+        </div>
+      </div>
+
       {/* Main Grid: Orders List & Detail View */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Left Column: List */}

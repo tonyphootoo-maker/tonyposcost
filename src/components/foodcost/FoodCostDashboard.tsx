@@ -23,8 +23,10 @@ import {
   formatPercent,
 } from '../../utils/calc';
 
+import { NavTab } from '../layout/Sidebar';
+
 interface FoodCostDashboardProps {
-  onNavigateTab?: (tab: any) => void;
+  onNavigateTab?: (tab: NavTab) => void;
 }
 
 export const FoodCostDashboard: React.FC<FoodCostDashboardProps> = ({ onNavigateTab }) => {

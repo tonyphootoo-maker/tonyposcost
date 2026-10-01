@@ -88,20 +88,53 @@ npm run preview
 
 ---
 
-## 🛑 ข้อจำกัดของระบบ (Limitations)
+## 9. 🛑 ข้อจำกัดของระบบที่ระบุอย่างตรงไปตรงมา (System Limitations & Honest Architecture)
 
-- **ไม่มี Cloud Auto-Sync ข้ามอุปกรณ์แบบ Real-time**: ข้อมูลถูกเก็บใน IndexedDB ของเครื่องที่เปิดใช้งาน หากต้องการย้ายเครื่องหรือแชร์ข้อมูล ต้องใช้วิธี Export / Import ไฟล์ JSON
-- **การพิมพ์ใบเสร็จ**: ขึ้นอยู่กับไดรเวอร์เครื่องพิมพ์และเบราว์เซอร์ (ต้องกดพิมพ์ผ่าน Print Dialog ของระบบปฏิบัติการ)
-- **การล้างข้อมูลเบราว์เซอร์**: หากผู้ใช้ล้าง Storage/IndexedDB ของเบราว์เซอร์ ข้อมูลจะถูกลบ (ควรเปิด Persistent Storage และหมั่น Export สำรองข้อมูล)
-- **การยืนยันยอดเงินโอนเข้าบัญชี**: ระบบสร้าง QR Code พร้อมเพย์ตามยอดเงินจริง แต่แคชเชียร์ต้องตรวจสอบสลิปการโอนเงินหรือ SMS แจ้งเตือนเงินเข้าของธนาคารด้วยตนเอง เนื่องจากไม่มีการเชื่อมต่อ API ของธนาคารภายนอก
+> **Tony's Kitchen ยึดหลักความโปร่งใสและตรงไปตรงมาต่อผู้ใช้งาน**: ระบบทำงานแบบ Local-First 100% ไม่มีเซิร์ฟเวอร์คลาวด์กลาง จึงมีข้อจำกัดทางสถาปัตยกรรมที่ผู้ใช้งานควรทราบดังนี้ (ไม่มีการหลอกฟีเจอร์ที่ไม่สามารถทำได้จริง):
+
+1. **ไม่มีการซิงก์ข้อมูลสดข้ามหลายอุปกรณ์ หรือดูยอดขายทางไกลแบบ Real-time (No live multi-device sync or real-time remote sales viewing):**
+   - ตัวระบบไม่มี Backend Server และไม่มี Cloud Database ข้อมูลทุกตารางถูกจัดเก็บไว้ใน IndexedDB ภายในเบราว์เซอร์ของเครื่องนั้นๆ
+   - **แนวทางปฏิบัติสำหรับเจ้าของร้าน:**
+     - สามารถกดปุ่ม **"คัดลอกสรุปยอดส่ง LINE (Copy summary for LINE)"** ในหน้ารายงานเพื่อคัดลอกสรุปยอดขายรายวันส่งเข้ากลุ่ม LINE ร้านได้ทันที
+     - ใช้ระบบ **"Export ข้อมูล (JSON)"** จากเมนูตั้งค่า แล้วนำไฟล์ไป **"Import"** บนคอมพิวเตอร์หรือโทรศัพท์มือถือเครื่องอื่นเพื่อเปิดดูรายงานเต็มรูปแบบ
+2. **การพิมพ์ใบเสร็จผ่าน Print Dialog ของเบราว์เซอร์ (58mm / 80mm CSS); ไม่มีการส่งคำสั่งดิบ ESC/POS Direct/Silent Network Printing:**
+   - การพิมพ์ใบเสร็จความร้อนทั้งขนาด 58 มม. และ 80 มม. ทำงานผ่านคำสั่งมาตรฐาน `window.print()` ร่วมกับ CSS `@media print` ซึ่งจะแสดงหน้าต่างพิมพ์ของระบบปฏิบัติการ/เบราว์เซอร์ให้กดยืนยัน
+   - ระบบไม่ได้เชื่อมต่อไดรเวอร์ระดับล่างแบบ ESC/POS Raw Binary ผ่าน TCP Socket หรือ Bluetooth SPP โดยตรง
+   - **เคล็ดลับสำหรับการพิมพ์เงียบอัตโนมัติ (Kiosk Printing Tip):** บนคอมพิวเตอร์ Windows/Mac สามารถเปิด Google Chrome ด้วยพารามิเตอร์ `--kiosk --kiosk-printing` เพื่อให้เครื่องพิมพ์ใบเสร็จออกทันทีโดยไม่ต้องผ่านหน้าต่าง Print Dialog
+3. **การชำระเงินด้วยบัตรและ E-Wallet เป็นการบันทึกสถานะด้วยตนเอง; ไม่มีการเชื่อมต่อ Payment Gateway และไม่มีการตรวจสอบยอดเงินพร้อมเพย์อัตโนมัติกับธนาคาร:**
+   - รายการชำระเงินผ่านบัตรเครดิต/เดบิต และกระเป๋าเงินดิจิทัล (E-Wallet) เป็นเพียงการบันทึกประเภทการจ่ายในระบบแคชเชียร์เท่านั้น ไม่มีการต่อเครื่องรูดบัตร EDC หรือ Gateway ภายนอก (เช่น 2C2P, Omise, GB Prime Pay)
+   - QR Code พร้อมเพย์สร้างขึ้นตามมาตรฐานสากล EMVCo พร้อม Checksum CRC-16 ถูกต้องตามยอดเงินจริง แต่**ไม่มี Webhook/API ยืนยันยอดเงินโอนเข้ากับธนาคารโดยอัตโนมัติ** แคชเชียร์ต้องตรวจสอบสลิปโอนเงินหรือการแจ้งเตือนจากแอปธนาคารด้วยตนเองก่อนกดยืนยันรับเงิน
+4. **ระบบสั่งอาหารออนไลน์ / QR สั่งอาหารที่โต๊ะโดยลูกค้า ยังไม่ได้เปิดทำงานแบบสด (Online ordering/QR ordering by customers is NOT live):**
+   - ระบบไม่ได้เปิดรับออเดอร์สดจากลูกค้าภายนอกผ่านอินเทอร์เน็ต เนื่องจากไม่มีเซิร์ฟเวอร์รับการเชื่อมต่อจากภายนอก
+   - หน้าต่าง **"ออเดอร์ออนไลน์ (Online Orders)"** ทำหน้าที่เป็นกล่องข้อความขาเข้า (Order Inbox), การแจ้งเตือนออเดอร์ และหน้าต่างนำเข้าคำสั่งซื้อผ่าน JSON เพื่อเตรียมพร้อมสำหรับเชื่อมต่อกับแอปสั่งอาหารของร้านในอนาคต
+5. **ระบบรองรับการใช้งานโดยให้อุปกรณ์เครื่องเดียวเป็นศูนย์กลางความถูกต้องของข้อมูล (Single device as the source of truth):**
+   - ตัวระบบออกแบบมาให้เครื่องแคชเชียร์หลักของร้านเป็นศูนย์กลางข้อมูลหลักเพียงเครื่องเดียว
+   - ไม่แนะนำให้บันทึกการขายแยกกันหลายเครื่องในกะเดียวกัน เพราะฐานข้อมูล IndexedDB ในแต่ละเบราว์เซอร์จะแยกจากกันอย่างสิ้นเชิง
 
 ---
 
-## 🇬🇧 English Summary
+## 🇬🇧 English Summary & Honest Limitations
 
 **Tony's Kitchen** is an all-in-one, offline-first Point of Sale (POS) and Food Cost Management suite specifically designed for Thai restaurants and cafes.
 
-### Key Highlights:
+### Key Architecture Highlights:
 - **100% Free & Offline-Ready**: Zero external API dependencies, zero backend server costs. All operational data is stored locally in the browser using IndexedDB (`idb`).
 - **Connected Modules**: Seamless workflow between Ingredient Inventory, Recipe Costing (% Yield, Labor, Packaging), Floor Plan Tables, POS Ordering, KDS Kitchen Display, Thermal Receipts, Dynamic PromptPay QR, CRM Members, and P&L Financial Reporting.
 - **GitHub Pages Ready**: Out-of-the-box GitHub Actions workflow included. Builds cleanly with `npm run build` using relative paths (`base: './'`).
+
+### 🛑 Honest System Limitations (Do Not Fake These Features):
+1. **No live multi-device sync or real-time remote sales viewing:**
+   - There is no central server or cloud database.
+   - For remote monitoring, owners can use the built-in **"Copy summary for LINE"** button to paste daily summaries into messaging chats, or perform **JSON Export / Import** to view reports on other devices.
+2. **Browser-based thermal printing (58mm / 80mm CSS):**
+   - Printing uses browser print dialogs (`window.print()`) styled via `@media print`.
+   - There is no direct TCP/Bluetooth raw ESC/POS binary printing.
+   - *Tip:* Users running Chrome on dedicated POS terminals can launch Chrome with `--kiosk --kiosk-printing` for one-click silent printing.
+3. **Manual payment recording & no bank webhook verification:**
+   - Card and e-wallet payments are recorded manually for bookkeeping; no external EDC terminal or payment gateway integrations exist.
+   - Dynamic PromptPay QR generates standard EMVCo payloads with accurate CRC-16 checksums, but does not connect to banking APIs to auto-verify transactions. Cashiers must verify transfer slips manually.
+4. **Customer online ordering is NOT live:**
+   - Only the Order Inbox, notification system, and JSON import interface are active, prepared for future integration with shop-owned ordering backends.
+5. **Single device as the source of truth:**
+   - The primary cashier terminal serves as the authoritative database. Multi-terminal concurrent writes without an external database are not supported.
+

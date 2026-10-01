@@ -1,0 +1,28 @@
+/**
+ * Initial Preset Sample Data for Tony's Kitchen
+ * Authentic Thai restaurant recipes, ingredients, tables, products & settings
+ */
+
+import {
+  DEFAULT_SETTINGS,
+  INITIAL_CATEGORIES,
+  INITIAL_INGREDIENTS,
+  INITIAL_RECIPES,
+  INITIAL_PRODUCTS,
+  INITIAL_TABLES,
+  INITIAL_PROMOTIONS,
+  INITIAL_MEMBERS,
+  INITIAL_EXPENSES,
+} from '../db';
+
+export {
+  DEFAULT_SETTINGS,
+  INITIAL_CATEGORIES,
+  INITIAL_INGREDIENTS,
+  INITIAL_RECIPES,
+  INITIAL_PRODUCTS,
+  INITIAL_TABLES,
+  INITIAL_PROMOTIONS,
+  INITIAL_MEMBERS,
+  INITIAL_EXPENSES,
+};
