@@ -24,8 +24,10 @@ import {
   GripVertical,
   ChevronUp,
   Search,
+  Printer,
+  PauseCircle,
 } from 'lucide-react';
-import { dbGetAll } from '../../db';
+import { dbGetAll, dbPut } from '../../db';
 import { showToast } from '../common/ToastContainer';
 
 interface OrderCartPanelProps {
@@ -33,6 +35,7 @@ interface OrderCartPanelProps {
   settings: RestaurantSettings | null;
   onUpdateOrder: (updated: Order) => void;
   onSendToKitchen: () => void;
+  onReprintKitchen?: () => void;
   onOpenCheckout: () => void;
   onOpenSplitBill: () => void;
   onClearOrder: () => void;
@@ -44,6 +47,7 @@ export const OrderCartPanel: React.FC<OrderCartPanelProps> = ({
   settings,
   onUpdateOrder,
   onSendToKitchen,
+  onReprintKitchen,
   onOpenCheckout,
   onClearOrder,
   onChangeTable,
@@ -140,7 +144,49 @@ export const OrderCartPanel: React.FC<OrderCartPanelProps> = ({
   };
 
   const handleChangeOrderType = (type: OrderType) => {
-    recalculateAndNotify(currentOrder.items, type, currentOrder.discountAmount);
+    const isDelivery = type === 'delivery';
+    const isTakeaway = type === 'takeaway';
+    const nextMode: 'table' | 'pay-now' = (isDelivery || isTakeaway) ? 'pay-now' : (currentOrder.mode || 'table');
+    recalculateAndNotify(
+      currentOrder.items,
+      type,
+      currentOrder.discountAmount,
+      undefined,
+      nextMode,
+      (nextMode === 'pay-now' || isTakeaway)
+        ? (currentOrder.queueNo ? String(currentOrder.queueNo) : `Q-${Date.now().toString().slice(-3)}`)
+        : (currentOrder.queueNo ? String(currentOrder.queueNo) : undefined)
+    );
+  };
+
+  const handleChangeMode = (mode: 'table' | 'pay-now') => {
+    const updated: Order = {
+      ...currentOrder,
+      mode,
+      queueNo: mode === 'pay-now' ? (currentOrder.queueNo || `Q-${Date.now().toString().slice(-3)}`) : undefined,
+    };
+    onUpdateOrder(updated);
+  };
+
+  const handleHoldOrder = async () => {
+    if (currentOrder.items.length === 0) return;
+    try {
+      const orderToHold: Order = {
+        ...currentOrder,
+        status: 'open',
+      };
+      await dbPut('orders', orderToHold);
+      showToast({
+        title: language === 'th' ? 'พักบิลเรียบร้อย' : 'Order Held',
+        message: language === 'th'
+          ? `บันทึกบิล ${orderToHold.orderNumber} แล้ว สามารถเปิดต่อได้จากเมนูบิลขาย`
+          : `Saved order ${orderToHold.orderNumber}. Can resume from Bills view.`,
+        type: 'success',
+      });
+      onClearOrder();
+    } catch {
+      showToast({ title: 'Error', message: 'Failed to hold order', type: 'error' });
+    }
   };
 
   // Member search
@@ -192,7 +238,10 @@ export const OrderCartPanel: React.FC<OrderCartPanelProps> = ({
     items: OrderItem[],
     type: OrderType,
     discountAmount: number,
-    member?: Member
+    member?: Member,
+    mode?: 'table' | 'pay-now',
+    platformId?: string,
+    queueNo?: string
   ) => {
     const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
     const totalCost = items.reduce((sum, item) => sum + item.unitCost * item.quantity, 0);
@@ -223,6 +272,9 @@ export const OrderCartPanel: React.FC<OrderCartPanelProps> = ({
     const updated: Order = {
       ...currentOrder,
       orderType: type,
+      mode: mode !== undefined ? mode : currentOrder.mode,
+      platformId: platformId !== undefined ? platformId : currentOrder.platformId,
+      queueNo: queueNo !== undefined ? queueNo : currentOrder.queueNo,
       items,
       subtotal,
       discountAmount,
@@ -244,59 +296,120 @@ export const OrderCartPanel: React.FC<OrderCartPanelProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-[#FFFFFF] border-l border-[#FED7AA] shadow-xs select-none">
-      {/* Top Row: Order Type Dropdown + Select Table + Member Chip (All >= 48px) */}
-      <div className="p-3 border-b border-[#FED7AA] bg-[#FFFFFF] flex flex-wrap items-center gap-2">
-        {/* Order Type Selector */}
-        <div className="relative flex-1 min-w-[120px]">
-          <select
-            value={currentOrder.orderType}
-            onChange={(e) => handleChangeOrderType(e.target.value as OrderType)}
-            className="w-full h-[48px] pl-9 pr-7 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-[#111827] text-sm font-semibold appearance-none cursor-pointer focus:ring-2 focus:ring-[#F97316] focus:outline-none"
-          >
-            <option value="dine_in">🍽️ {language === 'th' ? 'ทานที่ร้าน' : 'Dine-in'}</option>
-            <option value="takeaway">🛍️ {language === 'th' ? 'กลับบ้าน' : 'Takeaway'}</option>
-            <option value="delivery">🛵 {language === 'th' ? 'เดลิเวอรี' : 'Delivery'}</option>
-          </select>
-          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#F97316]">
-            {currentOrder.orderType === 'dine_in' && <UtensilsCrossed className="w-4 h-4" />}
-            {currentOrder.orderType === 'takeaway' && <ShoppingBag className="w-4 h-4" />}
-            {currentOrder.orderType === 'delivery' && <Bike className="w-4 h-4" />}
+      {/* Top Header Section: Order Type, Mode, Table/Queue/Platform & Member (Section 7.1) */}
+      <div className="p-3 border-b border-[#FED7AA] bg-[#FFFFFF] space-y-2">
+        {/* Row 1: Order Type & Mode Selectors (Both >= 44px) */}
+        <div className="grid grid-cols-2 gap-2">
+          {/* Order Type Selector */}
+          <div className="relative">
+            <select
+              value={currentOrder.orderType}
+              onChange={(e) => handleChangeOrderType(e.target.value as OrderType)}
+              className="w-full h-[44px] pl-3 pr-7 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-[#111827] text-xs font-bold appearance-none cursor-pointer focus:ring-2 focus:ring-[#F97316]"
+            >
+              <option value="dine_in">🍽️ {language === 'th' ? 'ทานที่ร้าน' : 'Dine-in'}</option>
+              <option value="takeaway">🛍️ {language === 'th' ? 'กลับบ้าน' : 'Takeaway'}</option>
+              <option value="delivery">🛵 {language === 'th' ? 'เดลิเวอรี' : 'Delivery'}</option>
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#6B7280] pointer-events-none" />
           </div>
-          <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6B7280] pointer-events-none" />
+
+          {/* Mode Selector (Section 7.1: เลือกโต๊ะ Fine Dining vs จ่ายทันที Quick Service) */}
+          <div className="relative">
+            <select
+              value={currentOrder.mode || (currentOrder.orderType === 'dine_in' ? 'table' : 'pay-now')}
+              onChange={(e) => handleChangeMode(e.target.value as 'table' | 'pay-now')}
+              className="w-full h-[44px] pl-3 pr-7 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-[#111827] text-xs font-bold appearance-none cursor-pointer focus:ring-2 focus:ring-[#F97316]"
+            >
+              <option value="table">🛎️ {language === 'th' ? 'เลือกโต๊ะ (บิลค้าง)' : 'Table (Check Later)'}</option>
+              <option value="pay-now">⚡ {language === 'th' ? 'จ่ายทันที (รับคิว)' : 'Pay Now (Queue)'}</option>
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#6B7280] pointer-events-none" />
+          </div>
         </div>
 
-        {/* Select Table / Queue Button */}
-        <button
-          type="button"
-          onClick={onChangeTable}
-          className="h-[48px] px-3.5 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] hover:bg-[#FFEDD5] text-[#111827] text-sm font-bold flex items-center gap-2 transition-colors cursor-pointer"
-        >
-          <span className="w-2 h-2 rounded-full bg-[#F97316]"></span>
-          <span className="truncate max-w-[120px]">
-            {currentOrder.tableName
-              ? currentOrder.tableName
-              : language === 'th'
-              ? 'เลือกโต๊ะ'
-              : 'Select Table'}
-          </span>
-        </button>
+        {/* Row 2: Table / Queue / Delivery Platform + Member CRM */}
+        <div className="flex items-center gap-2">
+          {currentOrder.orderType === 'delivery' ? (
+            /* Delivery Platform Selector */
+            <div className="flex-1 relative">
+              <select
+                value={currentOrder.platformId || currentOrder.deliveryPlatform || 'grab'}
+                onChange={(e) => {
+                  const plat = e.target.value as any;
+                  onUpdateOrder({
+                    ...currentOrder,
+                    platformId: plat,
+                    deliveryPlatform: plat,
+                  });
+                }}
+                className="w-full h-[44px] pl-3 pr-7 rounded-xl border border-[#FDBA74] bg-[#FFF3E0] text-[#9A3412] text-xs font-bold appearance-none cursor-pointer"
+              >
+                <option value="grab">🛵 Grab Food</option>
+                <option value="lineman">🛵 LINE MAN</option>
+                <option value="shopeefood">🛵 ShopeeFood</option>
+                <option value="robinhood">🛵 Robinhood</option>
+                <option value="direct">🏠 ร้านส่งเอง (Direct)</option>
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#9A3412] pointer-events-none" />
+            </div>
+          ) : (currentOrder.mode === 'pay-now' || currentOrder.orderType === 'takeaway') ? (
+            /* Quick Service Queue Badge / Input */
+            <div className="flex-1 flex items-center gap-2 h-[44px] px-3 rounded-xl border border-[#FDBA74] bg-[#FFF8EE]">
+              <span className="text-xs font-bold text-[#EA580C] shrink-0">
+                {language === 'th' ? 'คิวที่:' : 'Queue:'}
+              </span>
+              <input
+                type="text"
+                value={currentOrder.queueNo || `Q-${currentOrder.orderNumber.slice(-3)}`}
+                onChange={(e) => {
+                  onUpdateOrder({
+                    ...currentOrder,
+                    queueNo: e.target.value,
+                  });
+                }}
+                placeholder="Q-01"
+                className="w-full font-mono font-black text-sm text-[#111827] bg-transparent focus:outline-none"
+              />
+            </div>
+          ) : (
+            /* Select Table Button */
+            <button
+              type="button"
+              onClick={onChangeTable}
+              className="flex-1 h-[44px] px-3 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] hover:bg-[#FFEDD5] text-[#111827] text-xs font-bold flex items-center justify-between transition-colors cursor-pointer"
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#EA580C] shrink-0"></span>
+                <span className="truncate">
+                  {currentOrder.tableName
+                    ? currentOrder.tableName
+                    : language === 'th'
+                    ? 'เลือกโต๊ะ'
+                    : 'Select Table'}
+                </span>
+              </div>
+              <ChevronDown className="w-3.5 h-3.5 text-[#6B7280] shrink-0" />
+            </button>
+          )}
 
-        {/* Member Chip Button */}
-        <button
-          type="button"
-          onClick={() => setIsMemberModalOpen(true)}
-          className={`h-[48px] px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
-            currentOrder.memberName
-              ? 'bg-[#FFEDD5] border-[#F97316] text-[#9A3412]'
-              : 'bg-[#FFF8EE] border-[#FED7AA] text-[#374151] hover:bg-[#FFEDD5]'
-          }`}
-          title="ค้นหา / ผูกสมาชิก CRM"
-        >
-          <Users className="w-4 h-4 text-[#F97316]" />
-          <span className="truncate max-w-[90px]">
-            {currentOrder.memberName || (language === 'th' ? 'สมาชิก' : 'Member')}
-          </span>
-        </button>
+          {/* Member CRM Chip */}
+          <button
+            type="button"
+            onClick={() => setIsMemberModalOpen(true)}
+            className={`h-[44px] px-3 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              currentOrder.memberName
+                ? 'bg-[#FFEDD5] border-[#F97316] text-[#9A3412]'
+                : 'bg-[#FFF8EE] border-[#FED7AA] text-[#374151] hover:bg-[#FFEDD5]'
+            }`}
+            title="ค้นหา / ผูกสมาชิก CRM"
+          >
+            <Users className="w-4 h-4 text-[#F97316]" />
+            <span className="truncate max-w-[80px]">
+              {currentOrder.memberName || (language === 'th' ? 'สมาชิก' : 'Member')}
+            </span>
+          </button>
+        </div>
       </div>
 
       {/* Middle: Scrollable Order Items List */}
@@ -436,17 +549,29 @@ export const OrderCartPanel: React.FC<OrderCartPanelProps> = ({
 
       {/* Bottom Sticky Section: Clear button, Subtotal, Grand Total, and Dual Buttons */}
       <div className="p-3 bg-[#FFFFFF] border-t-2 border-[#FED7AA] space-y-3">
-        {/* Top bar: Ghost red clear button + Total items count & Subtotal */}
+        {/* Top bar: Ghost red clear button + Hold button + Total items count & Subtotal */}
         <div className="flex items-center justify-between text-sm">
-          <button
-            type="button"
-            disabled={isOrderEmpty}
-            onClick={onClearOrder}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[#DC2626] hover:bg-[#FEE2E2] font-semibold text-xs disabled:opacity-40 disabled:hover:bg-transparent transition cursor-pointer"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>{language === 'th' ? 'ลบทั้งหมด' : 'Clear All'}</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              disabled={isOrderEmpty}
+              onClick={onClearOrder}
+              className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[#DC2626] hover:bg-[#FEE2E2] font-semibold text-xs disabled:opacity-40 disabled:hover:bg-transparent transition cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>{language === 'th' ? 'ล้าง' : 'Clear'}</span>
+            </button>
+            <button
+              type="button"
+              disabled={isOrderEmpty}
+              onClick={handleHoldOrder}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[#EA580C] bg-[#FFF3E0] hover:bg-[#FFEDD5] border border-[#FED7AA] font-bold text-xs disabled:opacity-40 disabled:hover:bg-transparent transition cursor-pointer shadow-2xs"
+              title="พักบิลนี้เพื่อไปรับออเดอร์อื่นก่อน"
+            >
+              <PauseCircle className="w-3.5 h-3.5" />
+              <span>{language === 'th' ? 'พักบิล' : 'Hold'}</span>
+            </button>
+          </div>
           <div className="text-[#374151] font-semibold text-[15px]">
             {language === 'th'
               ? `ทั้งหมด (${totalItemsCount} รายการ)`
@@ -509,6 +634,18 @@ export const OrderCartPanel: React.FC<OrderCartPanelProps> = ({
             <span>{language === 'th' ? 'ชำระเงิน' : 'Pay'}</span>
           </button>
         </div>
+
+        {/* Section 7.3: Reprint Kitchen Ticket Button */}
+        {currentOrder.items.some((i) => i.sentToKitchenAt || i.kitchenStatus !== 'pending') && onReprintKitchen && (
+          <button
+            type="button"
+            onClick={onReprintKitchen}
+            className="w-full py-2 px-3 text-xs font-bold text-[#EA580C] bg-[#FFF8EE] hover:bg-[#FFEDD5] rounded-xl border border-[#FED7AA] flex items-center justify-center gap-2 transition cursor-pointer mt-1"
+          >
+            <Printer className="w-3.5 h-3.5" />
+            <span>{language === 'th' ? 'พิมพ์ซ้ำใบสั่งครัว (Reprint Kitchen Ticket)' : 'Reprint Kitchen Ticket'}</span>
+          </button>
+        )}
       </div>
 
       {/* Note Edit Modal */}

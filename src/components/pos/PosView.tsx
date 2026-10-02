@@ -15,6 +15,7 @@ import { useTranslation } from '../../i18n';
 import { OrderCartPanel } from './OrderCartPanel';
 import { PaymentModal } from './PaymentModal';
 import { SplitBillModal } from './SplitBillModal';
+import { KitchenTicketModal } from '../kitchen/KitchenTicketModal';
 import {
   Search,
   Plus,
@@ -37,6 +38,7 @@ import {
   Beer,
   Layers,
   Sparkles,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface PosViewProps {
@@ -79,12 +81,16 @@ export const PosView: React.FC<PosViewProps> = ({
 
   // Modals
   const [customizingProduct, setCustomizingProduct] = useState<Product | null>(null);
+  const [customizingQty, setCustomizingQty] = useState(1);
   const [selectedVariant, setSelectedVariant] = useState<ProductVariant | undefined>(undefined);
   const [selectedModifiers, setSelectedModifiers] = useState<ProductModifierOption[]>([]);
   const [customizeNotes, setCustomizeNotes] = useState('');
 
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isSplitModalOpen, setIsSplitModalOpen] = useState(false);
+  const [isKitchenTicketModalOpen, setIsKitchenTicketModalOpen] = useState(false);
+  const [kitchenTicketItems, setKitchenTicketItems] = useState<OrderItem[]>([]);
+  const [isKitchenReprint, setIsKitchenReprint] = useState(false);
 
   // Category Manager Modal
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -148,6 +154,7 @@ export const PosView: React.FC<PosViewProps> = ({
 
     if (hasOptions) {
       setCustomizingProduct(product);
+      setCustomizingQty(1);
       setSelectedVariant(product.variants?.[0]);
       setSelectedModifiers([]);
       setCustomizeNotes('');
@@ -160,7 +167,8 @@ export const PosView: React.FC<PosViewProps> = ({
     product: Product,
     variant?: ProductVariant,
     modifiers: ProductModifierOption[] = [],
-    notes: string = ''
+    notes: string = '',
+    quantity: number = 1
   ) => {
     const priceDeltaVariant = variant ? variant.priceDelta : 0;
     const priceDeltaModifiers = modifiers.reduce((acc, m) => acc + m.priceDelta, 0);
@@ -179,7 +187,7 @@ export const PosView: React.FC<PosViewProps> = ({
 
     if (existingIndex > -1) {
       const existing = updatedItems[existingIndex];
-      const newQty = existing.quantity + 1;
+      const newQty = existing.quantity + quantity;
       updatedItems[existingIndex] = {
         ...existing,
         quantity: newQty,
@@ -193,11 +201,11 @@ export const PosView: React.FC<PosViewProps> = ({
         productNameEn: product.nameEn,
         basePrice: unitPrice,
         unitCost,
-        quantity: 1,
+        quantity,
         selectedVariant: variant,
         selectedModifiers: modifiers,
         notes: notes.trim(),
-        lineTotal: unitPrice,
+        lineTotal: unitPrice * quantity,
         kitchenStatus: 'pending',
         kitchenStation: product.kitchenStation,
         orderedAt: new Date().toISOString(),
@@ -248,12 +256,25 @@ export const PosView: React.FC<PosViewProps> = ({
     setCurrentOrder(updated);
   };
 
-  const handleSendToKitchen = async () => {
+  const handleSendToKitchen = async (reprint = false) => {
     if (currentOrder.items.length === 0) return;
+
+    if (reprint) {
+      setKitchenTicketItems(currentOrder.items);
+      setIsKitchenReprint(true);
+      setIsKitchenTicketModalOpen(true);
+      return;
+    }
+
+    const unsentLines = currentOrder.items.filter(
+      (i) => !i.sentToKitchenAt || i.kitchenStatus === 'pending'
+    );
+    const now = new Date().toISOString();
 
     const preparingItems = currentOrder.items.map((i) => ({
       ...i,
       kitchenStatus: i.kitchenStatus === 'pending' ? ('preparing' as const) : i.kitchenStatus,
+      sentToKitchenAt: i.sentToKitchenAt || now,
     }));
 
     const orderToSave: Order = {
@@ -270,13 +291,15 @@ export const PosView: React.FC<PosViewProps> = ({
       if (tbl) {
         tbl.status = 'occupied';
         tbl.currentOrderId = orderToSave.id;
-        tbl.openedAt = tbl.openedAt || new Date().toISOString();
+        tbl.openedAt = tbl.openedAt || now;
         await dbPut('tables', tbl);
       }
     }
 
     setCurrentOrder(orderToSave);
-    alert(language === 'th' ? 'ส่งออเดอร์เข้าครัวสำเร็จ!' : 'Order sent to kitchen!');
+    setKitchenTicketItems(unsentLines.length > 0 ? unsentLines : preparingItems);
+    setIsKitchenReprint(false);
+    setIsKitchenTicketModalOpen(true);
   };
 
   const handleClearOrder = () => {
@@ -493,6 +516,21 @@ export const PosView: React.FC<PosViewProps> = ({
             )}
           </div>
 
+          {/* Section 7.10: Selling while no shift is open is allowed but shows a soft warning banner */}
+          {!activeShift && (
+            <div className="bg-[#FEF3C7] border-b border-[#FCD34D] px-4 py-2 flex items-center justify-between text-xs text-[#92400E]">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-[#D97706] shrink-0" />
+                <span>
+                  <strong>{language === 'th' ? 'ยังไม่ได้เปิดกะการขาย' : 'No shift open'}:</strong>{' '}
+                  {language === 'th'
+                    ? 'สามารถขายได้ตามปกติ แต่รายการนี้จะไม่ถูกผูกกับกะเงินสด (แนะนำให้เปิดกะก่อนเริ่มขาย)'
+                    : 'You can sell, but orders will not be linked to a cash drawer shift.'}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Sub-grid Banner if inside a group */}
           {activeGroupName && (
             <div className="bg-[#FFF3E0] px-4 py-2 border-b border-[#FED7AA] flex items-center justify-between">
@@ -661,7 +699,8 @@ export const PosView: React.FC<PosViewProps> = ({
             currentOrder={currentOrder}
             settings={settings}
             onUpdateOrder={setCurrentOrder}
-            onSendToKitchen={handleSendToKitchen}
+            onSendToKitchen={() => handleSendToKitchen(false)}
+            onReprintKitchen={() => handleSendToKitchen(true)}
             onOpenCheckout={() => setIsPaymentModalOpen(true)}
             onOpenSplitBill={() => setIsSplitModalOpen(true)}
             onClearOrder={handleClearOrder}
@@ -717,7 +756,11 @@ export const PosView: React.FC<PosViewProps> = ({
                 settings={settings}
                 onUpdateOrder={setCurrentOrder}
                 onSendToKitchen={() => {
-                  handleSendToKitchen();
+                  handleSendToKitchen(false);
+                  setIsMobileCartOpen(false);
+                }}
+                onReprintKitchen={() => {
+                  handleSendToKitchen(true);
                   setIsMobileCartOpen(false);
                 }}
                 onOpenCheckout={() => {
@@ -890,54 +933,97 @@ export const PosView: React.FC<PosViewProps> = ({
             {/* Modifier Groups Selector */}
             {customizingProduct.modifierGroups && customizingProduct.modifierGroups.length > 0 && (
               <div className="space-y-3 max-h-48 overflow-y-auto pr-1">
-                {customizingProduct.modifierGroups.map((grp) => (
-                  <div key={grp.id} className="space-y-1.5">
-                    <span className="text-sm font-bold text-[#111827]">
-                      {language === 'th' ? grp.nameTh : grp.nameEn || grp.nameTh}:
-                    </span>
-                    <div className="flex flex-wrap gap-2">
-                      {grp.options.map((opt) => {
-                        const isChosen = selectedModifiers.some((m) => m.id === opt.id);
-                        return (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => {
-                              if (grp.multiSelect) {
-                                if (isChosen) {
-                                  setSelectedModifiers((prev) => prev.filter((m) => m.id !== opt.id));
+                {customizingProduct.modifierGroups.map((grp) => {
+                  const isSatisfied = !grp.required || selectedModifiers.some((sm) => grp.options.some((opt) => opt.id === sm.id));
+                  return (
+                    <div key={grp.id} className="space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-[#111827]">
+                          {language === 'th' ? grp.nameTh : grp.nameEn || grp.nameTh}:
+                        </span>
+                        {grp.required && (
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                            isSatisfied
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                              : 'bg-red-50 text-red-700 border-red-300'
+                          }`}>
+                            {language === 'th' ? (isSatisfied ? 'เลือกแล้ว' : 'จำเป็น *') : (isSatisfied ? 'Selected' : 'Required *')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {grp.options.map((opt) => {
+                          const isChosen = selectedModifiers.some((m) => m.id === opt.id);
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => {
+                                if (grp.multiSelect) {
+                                  if (isChosen) {
+                                    setSelectedModifiers((prev) => prev.filter((m) => m.id !== opt.id));
+                                  } else {
+                                    setSelectedModifiers((prev) => [...prev, opt]);
+                                  }
                                 } else {
-                                  setSelectedModifiers((prev) => [...prev, opt]);
+                                  setSelectedModifiers((prev) => [
+                                    ...prev.filter(
+                                      (m) => !grp.options.some((o) => o.id === m.id)
+                                    ),
+                                    opt,
+                                  ]);
                                 }
-                              } else {
-                                setSelectedModifiers((prev) => [
-                                  ...prev.filter(
-                                    (m) => !grp.options.some((o) => o.id === m.id)
-                                  ),
-                                  opt,
-                                ]);
-                              }
-                            }}
-                            className={`px-3 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
-                              isChosen
-                                ? 'bg-[#FFEDD5] border-[#F97316] text-[#9A3412] shadow-xs'
-                                : 'bg-[#FFF8EE] border-[#FED7AA] text-[#374151]'
-                            }`}
-                          >
-                            <span>{language === 'th' ? opt.nameTh : opt.nameEn || opt.nameTh}</span>
-                            {opt.priceDelta > 0 && (
-                              <span className="font-bold text-[#EA580C]">
-                                +฿{opt.priceDelta}
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
+                              }}
+                              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                                isChosen
+                                  ? 'bg-[#FFEDD5] border-[#F97316] text-[#9A3412] shadow-xs'
+                                  : 'bg-[#FFF8EE] border-[#FED7AA] text-[#374151]'
+                              }`}
+                            >
+                              <span>{language === 'th' ? opt.nameTh : opt.nameEn || opt.nameTh}</span>
+                              {opt.priceDelta > 0 && (
+                                <span className="font-bold text-[#EA580C]">
+                                  +฿{opt.priceDelta}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
+
+            {/* Quick Note Chips (Section 7.1) */}
+            <div className="space-y-1.5">
+              <span className="text-xs font-bold text-[#374151]">
+                {language === 'th' ? 'ตัวเลือกข้อความด่วน:' : 'Quick Note Chips:'}
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  'เผ็ดน้อย',
+                  'ไม่ใส่ผัก',
+                  'ขอซอสเพิ่ม',
+                  'แยกน้ำ',
+                  'ไม่ใส่ชูรส',
+                  'หวานน้อย',
+                  'เผ็ดมาก',
+                ].map((chip) => (
+                  <button
+                    key={chip}
+                    type="button"
+                    onClick={() => {
+                      setCustomizeNotes((prev) => (prev ? `${prev}, ${chip}` : chip));
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-[#FFF3E0] hover:bg-[#FFE0B2] border border-[#FED7AA] text-[12px] font-semibold text-[#9A3412] active:scale-95 transition-all cursor-pointer"
+                  >
+                    + {chip}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             {/* Special Instructions Input */}
             <div className="space-y-1">
@@ -953,29 +1039,76 @@ export const PosView: React.FC<PosViewProps> = ({
               />
             </div>
 
+            {/* Quantity Stepper (Section 7.1) */}
+            <div className="flex items-center justify-between bg-[#FFF8EE] p-3 rounded-2xl border border-[#FED7AA]">
+              <span className="text-sm font-bold text-[#111827]">
+                {language === 'th' ? 'จำนวน (ที่/จาน):' : 'Quantity:'}
+              </span>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setCustomizingQty((q) => Math.max(1, q - 1))}
+                  className="w-10 h-10 rounded-xl bg-white border border-[#FED7AA] flex items-center justify-center font-bold text-lg text-[#111827] hover:bg-[#FFEDD5] active:bg-[#FED7AA] transition cursor-pointer"
+                >
+                  -
+                </button>
+                <span className="w-8 text-center text-xl font-black text-[#111827]">
+                  {customizingQty}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCustomizingQty((q) => q + 1)}
+                  className="w-10 h-10 rounded-xl bg-white border border-[#FED7AA] flex items-center justify-center font-bold text-lg text-[#111827] hover:bg-[#FFEDD5] active:bg-[#FED7AA] transition cursor-pointer"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            {/* Missing Required Warning if any */}
+            {(() => {
+              const missing = (customizingProduct.modifierGroups || []).find(
+                (grp) => grp.required && !selectedModifiers.some((sm) => grp.options.some((opt) => opt.id === sm.id))
+              );
+              if (!missing) return null;
+              return (
+                <div className="text-xs font-bold text-red-600 bg-red-50 p-2.5 rounded-xl border border-red-200 text-center">
+                  ⚠️ {language === 'th'
+                    ? `กรุณาเลือก "${missing.nameTh}" ก่อนเพิ่มรายการ (จำเป็น)`
+                    : `Please select "${missing.nameEn || missing.nameTh}" before adding (Required)`}
+                </div>
+              );
+            })()}
+
             {/* Action Buttons */}
             <div className="flex gap-2 pt-2 border-t border-[#FED7AA]">
               <button
                 type="button"
                 onClick={() => setCustomizingProduct(null)}
-                className="flex-1 h-[48px] rounded-xl border border-[#FED7AA] bg-[#FFFFFF] hover:bg-neutral-100 text-[#374151] font-semibold text-sm"
+                className="flex-1 h-[48px] rounded-xl border border-[#FED7AA] bg-[#FFFFFF] hover:bg-neutral-100 text-[#374151] font-semibold text-sm cursor-pointer"
               >
                 {language === 'th' ? 'ยกเลิก' : 'Cancel'}
               </button>
               <button
                 type="button"
+                disabled={Boolean(
+                  (customizingProduct.modifierGroups || []).some(
+                    (grp) => grp.required && !selectedModifiers.some((sm) => grp.options.some((opt) => opt.id === sm.id))
+                  )
+                )}
                 onClick={() => {
                   addItemToCart(
                     customizingProduct,
                     selectedVariant,
                     selectedModifiers,
-                    customizeNotes
+                    customizeNotes,
+                    customizingQty
                   );
                   setCustomizingProduct(null);
                 }}
-                className="flex-1 h-[48px] rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold text-sm shadow-sm"
+                className="flex-1 h-[48px] rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold text-sm shadow-sm disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
               >
-                {language === 'th' ? 'เพิ่มลงออเดอร์' : 'Add to Order'}
+                {language === 'th' ? `เพิ่มลงออเดอร์ (${customizingQty})` : `Add to Order (${customizingQty})`}
               </button>
             </div>
           </div>
@@ -1189,6 +1322,18 @@ export const PosView: React.FC<PosViewProps> = ({
             }
             setIsSplitModalOpen(false);
           }}
+        />
+      )}
+
+      {/* Kitchen & Bar Station Ticket Modal (Section 7.3) */}
+      {isKitchenTicketModalOpen && (
+        <KitchenTicketModal
+          isOpen={isKitchenTicketModalOpen}
+          order={currentOrder}
+          itemsToPrint={kitchenTicketItems}
+          settings={settings}
+          isReprint={isKitchenReprint}
+          onClose={() => setIsKitchenTicketModalOpen(false)}
         />
       )}
     </div>
