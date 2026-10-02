@@ -39,6 +39,9 @@ function AppContent() {
   const [selectedTableForPos, setSelectedTableForPos] = useState<RestaurantTable | null>(null);
   const [existingOrderForPos, setExistingOrderForPos] = useState<Order | null>(null);
 
+  // Cross-view state: Recipe clicked from Dashboard to open in Pricing Simulator
+  const [selectedRecipeIdForPricing, setSelectedRecipeIdForPricing] = useState<string | null>(null);
+
   const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
@@ -171,14 +174,25 @@ function AppContent() {
 
           {/* Food Cost / ต้นทุน Group */}
           {activeTab === 'fc_dashboard' && (
-            <FoodCostDashboard onNavigateTab={handleTabChange} />
+            <FoodCostDashboard
+              onNavigateTab={handleTabChange}
+              onNavigateToPricing={(recipeId) => {
+                setSelectedRecipeIdForPricing(recipeId);
+                setActiveTab('fc_pricing');
+              }}
+            />
           )}
 
           {activeTab === 'fc_ingredients' && <IngredientsManager />}
 
           {activeTab === 'fc_recipes' && <FoodCostView />}
 
-          {activeTab === 'fc_pricing' && <PricingSimulatorView />}
+          {activeTab === 'fc_pricing' && (
+            <PricingSimulatorView
+              initialRecipeId={selectedRecipeIdForPricing}
+              onClearInitialRecipeId={() => setSelectedRecipeIdForPricing(null)}
+            />
+          )}
 
           {/* Manage / จัดการ Group */}
           {activeTab === 'products' && <ProductsManagementView />}

@@ -32,6 +32,7 @@ import {
   Tag,
   Clock,
   Sparkles,
+  Edit2,
 } from 'lucide-react';
 import { showToast } from '../common/ToastContainer';
 import {
@@ -304,6 +305,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         ...settings,
         expenseCategories: (settings.expenseCategories || []).filter((c) => c !== cat),
       });
+    }
+  };
+
+  const handleRenameCategory = (type: 'ingredient' | 'recipe' | 'expense', oldName: string) => {
+    if (!settings) return;
+    const newName = prompt(`เปลี่ยนชื่อหมวดหมู่ "${oldName}" เป็น:`, oldName);
+    if (!newName || !newName.trim() || newName.trim() === oldName) return;
+    const trimmed = newName.trim();
+
+    if (type === 'ingredient') {
+      const list = (settings.ingredientCategories || []).map((c) => (c === oldName ? trimmed : c));
+      setSettings({ ...settings, ingredientCategories: list });
+    } else if (type === 'recipe') {
+      const list = (settings.recipeCategories || []).map((c) => (c === oldName ? trimmed : c));
+      setSettings({ ...settings, recipeCategories: list });
+    } else {
+      const list = (settings.expenseCategories || []).map((c) => (c === oldName ? trimmed : c));
+      setSettings({ ...settings, expenseCategories: list });
     }
   };
 
@@ -1117,20 +1136,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 {/* Display Current Categories */}
-                <div className="space-y-3 pt-2 text-xs">
+                <div className="space-y-4 pt-2 text-xs">
                   <div>
-                    <div className="font-semibold text-neutral-400 mb-1.5">หมวดวัตถุดิบ:</div>
+                    <div className="font-bold text-[#374151] mb-1.5">หมวดวัตถุดิบ (Ingredient Categories):</div>
                     <div className="flex flex-wrap gap-1.5">
                       {(settings.ingredientCategories || []).map((c) => (
                         <span
                           key={c}
-                          className="px-2.5 py-1 bg-neutral-900 border border-neutral-800 rounded-lg text-neutral-300 flex items-center gap-1.5"
+                          className="px-2.5 py-1 bg-[#FFF8EE] border border-[#FED7AA] rounded-lg text-[#111827] font-medium flex items-center gap-1.5 shadow-2xs"
                         >
-                          {c}
+                          <span>{c}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleRenameCategory('ingredient', c)}
+                            className="p-0.5 text-[#F97316] hover:text-[#EA580C] hover:bg-[#FFEDD5] rounded transition cursor-pointer"
+                            title="เปลี่ยนชื่อหมวดหมู่นี้"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                          </button>
                           <button
                             type="button"
                             onClick={() => handleDeleteCategory('ingredient', c)}
-                            className="hover:text-rose-400"
+                            className="p-0.5 text-[#DC2626] hover:text-[#991B1B] hover:bg-[#FEE2E2] rounded transition cursor-pointer font-bold text-sm leading-none"
+                            title="ลบหมวดหมู่นี้"
                           >
                             ×
                           </button>
@@ -1140,18 +1168,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   <div>
-                    <div className="font-semibold text-neutral-400 mb-1.5">หมวดสูตร/เมนู:</div>
+                    <div className="font-bold text-[#374151] mb-1.5">หมวดสูตร/เมนู (Recipe Categories):</div>
                     <div className="flex flex-wrap gap-1.5">
                       {(settings.recipeCategories || []).map((c) => (
                         <span
                           key={c}
-                          className="px-2.5 py-1 bg-neutral-900 border border-neutral-800 rounded-lg text-neutral-300 flex items-center gap-1.5"
+                          className="px-2.5 py-1 bg-[#FFF8EE] border border-[#FED7AA] rounded-lg text-[#111827] font-medium flex items-center gap-1.5 shadow-2xs"
                         >
-                          {c}
+                          <span>{c}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleRenameCategory('recipe', c)}
+                            className="p-0.5 text-[#F97316] hover:text-[#EA580C] hover:bg-[#FFEDD5] rounded transition cursor-pointer"
+                            title="เปลี่ยนชื่อหมวดหมู่นี้"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                          </button>
                           <button
                             type="button"
                             onClick={() => handleDeleteCategory('recipe', c)}
-                            className="hover:text-rose-400"
+                            className="p-0.5 text-[#DC2626] hover:text-[#991B1B] hover:bg-[#FEE2E2] rounded transition cursor-pointer font-bold text-sm leading-none"
+                            title="ลบหมวดหมู่นี้"
                           >
                             ×
                           </button>
@@ -1161,18 +1198,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   <div>
-                    <div className="font-semibold text-neutral-400 mb-1.5">หมวดรายจ่าย:</div>
+                    <div className="font-bold text-[#374151] mb-1.5">หมวดรายจ่าย (Expense Categories):</div>
                     <div className="flex flex-wrap gap-1.5">
                       {(settings.expenseCategories || []).map((c) => (
                         <span
                           key={c}
-                          className="px-2.5 py-1 bg-neutral-900 border border-neutral-800 rounded-lg text-neutral-300 flex items-center gap-1.5"
+                          className="px-2.5 py-1 bg-[#FFF8EE] border border-[#FED7AA] rounded-lg text-[#111827] font-medium flex items-center gap-1.5 shadow-2xs"
                         >
-                          {c}
+                          <span>{c}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleRenameCategory('expense', c)}
+                            className="p-0.5 text-[#F97316] hover:text-[#EA580C] hover:bg-[#FFEDD5] rounded transition cursor-pointer"
+                            title="เปลี่ยนชื่อหมวดหมู่นี้"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                          </button>
                           <button
                             type="button"
                             onClick={() => handleDeleteCategory('expense', c)}
-                            className="hover:text-rose-400"
+                            className="p-0.5 text-[#DC2626] hover:text-[#991B1B] hover:bg-[#FEE2E2] rounded transition cursor-pointer font-bold text-sm leading-none"
+                            title="ลบหมวดหมู่นี้"
                           >
                             ×
                           </button>

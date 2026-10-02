@@ -45,7 +45,7 @@ interface FoodCostViewProps {
 }
 
 export const FoodCostView: React.FC<FoodCostViewProps> = ({ onRecipesUpdated }) => {
-  const { t, formatCurrency } = useTranslation();
+  const { t, formatCurrency, language } = useTranslation();
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -200,6 +200,18 @@ export const FoodCostView: React.FC<FoodCostViewProps> = ({ onRecipesUpdated }) 
   };
 
   const handleDelete = async (rec: Recipe) => {
+    // Section 4: Deleting a recipe that has a product is blocked with an explanation
+    const allProducts = await dbGetAll<Product>('products');
+    const linkedProduct = allProducts.find((p) => p.recipeId === rec.id);
+    if (linkedProduct) {
+      alert(
+        language === 'th'
+          ? `ไม่สามารถลบสูตร "${rec.nameTh || rec.name}" ได้ เนื่องจากผูกอยู่กับสินค้าขายหน้าร้าน (POS) "${linkedProduct.nameTh || linkedProduct.nameEn}"\n\n(ตามกฎความปลอดภัยของข้อมูล: สินค้าขายหน้าร้านอิงข้อมูลจากสูตรอาหารเป็น Single Source of Truth กรุณาลบสินค้าหน้าร้านก่อน หรือเปลี่ยนสูตรที่ผูกไว้)`
+          : `Cannot delete recipe "${rec.nameTh || rec.name}" because it is linked to POS Product "${linkedProduct.nameTh || linkedProduct.nameEn}". Please delete or unlink the POS product first.`
+      );
+      return;
+    }
+
     // 6.2 Deleting a sub-recipe used elsewhere is blocked with an explanation
     const isSub = rec.type === 'sub' || rec.type === 'sub_recipe';
     if (isSub) {

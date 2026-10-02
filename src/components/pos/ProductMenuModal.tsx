@@ -1,19 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Product, ProductCategory, Recipe } from '../../types';
-import { dbGetAll, dbPut, dbDelete } from '../../db';
+import { Product, ProductCategory, Recipe, ModifierGroup, ProductVariant, PosGroup } from '../../types';
+import { dbGetAll, dbPut } from '../../db';
 import { useTranslation } from '../../i18n';
 import { compressImage } from '../../utils/imageCompressor';
 import {
   X,
-  Upload,
   Plus,
   Trash2,
   UtensilsCrossed,
   Image as ImageIcon,
-  DollarSign,
+  Link,
   Layers,
   Sparkles,
-  Link,
+  Printer,
+  ChevronDown,
 } from 'lucide-react';
 
 interface ProductMenuModalProps {
@@ -31,8 +31,12 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
 }) => {
   const { t, language, formatCurrency } = useTranslation();
   const [categories, setCategories] = useState<ProductCategory[]>([]);
+  const [groups, setGroups] = useState<PosGroup[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Mode: 'pick_recipe' or 'create_inline'
+  const [creationMode, setCreationMode] = useState<'pick_recipe' | 'create_inline'>('create_inline');
 
   const [formData, setFormData] = useState<Product>({
     id: '',
@@ -41,8 +45,9 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
     descriptionTh: '',
     descriptionEn: '',
     categoryId: '',
-    price: 100,
-    cost: 35,
+    groupId: undefined,
+    price: 120,
+    cost: 40,
     recipeId: '',
     isAvailable: true,
     image: '',
@@ -56,6 +61,7 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
       loadDependencies();
       if (productToEdit) {
         setFormData({ ...productToEdit });
+        setCreationMode(productToEdit.recipeId ? 'pick_recipe' : 'create_inline');
       } else {
         setFormData({
           id: `prod_${Date.now()}`,
@@ -64,6 +70,7 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
           descriptionTh: '',
           descriptionEn: '',
           categoryId: '',
+          groupId: undefined,
           price: 120,
           cost: 40,
           recipeId: '',
@@ -73,17 +80,37 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
           variants: [],
           modifierGroups: [],
         });
+        setCreationMode('create_inline');
       }
     }
   }, [isOpen, productToEdit]);
 
   const loadDependencies = async () => {
-    const [cats, recs] = await Promise.all([
+    const [cats, recs, allProds] = await Promise.all([
       dbGetAll<ProductCategory>('categories'),
       dbGetAll<Recipe>('recipes'),
+      dbGetAll<Product>('products'),
     ]);
     setCategories(cats);
-    setRecipes(recs);
+    // Menu recipes only
+    setRecipes(recs.filter((r) => r.type === 'menu' || r.type === 'dish'));
+
+    // Extract groups
+    const grpList: PosGroup[] = [];
+    allProds.forEach((p) => {
+      if (p.groupId && p.groupName && !grpList.some((g) => g.id === p.groupId)) {
+        grpList.push({
+          id: p.groupId,
+          categoryId: p.categoryId,
+          name: { th: p.groupName, en: p.groupName },
+          nameTh: p.groupName,
+          nameEn: p.groupName,
+          sortOrder: 1,
+        });
+      }
+    });
+    setGroups(grpList);
+
     if (!formData.categoryId && cats.length > 0) {
       setFormData((prev) => ({ ...prev, categoryId: cats[0].id }));
     }
@@ -107,10 +134,11 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
       setFormData((prev) => ({
         ...prev,
         recipeId: selected.id,
-        cost: selected.totalCostPerPortion,
-        price: prev.price || selected.actualSellingPrice,
-        nameTh: prev.nameTh || selected.nameTh,
-        nameEn: prev.nameEn || selected.nameEn,
+        cost: selected.totalCostPerPortion || 0,
+        price: selected.actualSellingPrice || selected.suggestedSellingPrice || prev.price,
+        nameTh: selected.nameTh || prev.nameTh,
+        nameEn: selected.nameEn || prev.nameEn,
+        categoryId: prev.categoryId || categories[0]?.id || '',
       }));
     } else {
       setFormData((prev) => ({ ...prev, recipeId: '' }));
@@ -118,7 +146,7 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
   };
 
   const handleAddVariant = () => {
-    const newVariant = {
+    const newVariant: ProductVariant = {
       id: `var_${Date.now()}`,
       nameTh: 'พิเศษ',
       nameEn: 'Extra',
@@ -139,7 +167,7 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
   };
 
   const handleAddModifierGroup = () => {
-    const newGroup = {
+    const newGroup: ModifierGroup = {
       id: `mod_${Date.now()}`,
       nameTh: 'ระดับความเผ็ด',
       nameEn: 'Spiciness',
@@ -166,9 +194,61 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.nameTh.trim()) return;
+    if (!formData.nameTh.trim()) {
+      alert(language === 'th' ? 'กรุณาระบุชื่อเมนูภาษาไทย' : 'Please provide item Thai name');
+      return;
+    }
 
-    await dbPut('products', formData);
+    let linkedRecipeId = formData.recipeId;
+
+    // Single source of truth: If creating new menu inline without a selected recipe, create the Recipe 1:1
+    if (!linkedRecipeId || creationMode === 'create_inline') {
+      if (!linkedRecipeId) {
+        linkedRecipeId = `rec_${Date.now()}`;
+        const newRecipe: Recipe = {
+          id: linkedRecipeId,
+          nameTh: formData.nameTh.trim(),
+          nameEn: formData.nameEn.trim() || formData.nameTh.trim(),
+          type: 'menu',
+          category: formData.categoryId,
+          portionsYield: 1,
+          items: [],
+          actualSellingPrice: formData.price,
+          suggestedSellingPrice: formData.price,
+          totalCostPerPortion: formData.cost,
+          totalRawCost: 0,
+          laborCostPerPortion: 0,
+          packagingCostPerPortion: 0,
+          targetFoodCostPct: 30,
+          grossMarginPct: Number((((formData.price - formData.cost) / (formData.price || 1)) * 100).toFixed(1)),
+          updatedAt: new Date().toISOString(),
+        };
+        await dbPut('recipes', newRecipe);
+      } else {
+        // Update linked recipe's name and price
+        const existingRec = recipes.find((r) => r.id === linkedRecipeId);
+        if (existingRec) {
+          const updatedRec: Recipe = {
+            ...existingRec,
+            nameTh: formData.nameTh.trim(),
+            nameEn: formData.nameEn.trim() || formData.nameTh.trim(),
+            actualSellingPrice: formData.price,
+            totalCostPerPortion: formData.cost,
+            updatedAt: new Date().toISOString(),
+          };
+          await dbPut('recipes', updatedRec);
+        }
+      }
+    }
+
+    const productToSave: Product = {
+      ...formData,
+      recipeId: linkedRecipeId,
+      nameTh: formData.nameTh.trim(),
+      nameEn: formData.nameEn.trim() || formData.nameTh.trim(),
+    };
+
+    await dbPut('products', productToSave);
     onSaved();
     onClose();
   };
@@ -176,25 +256,57 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
-      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs animate-fade-in">
+      <div className="bg-[#FFFFFF] border border-[#FED7AA] rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800 bg-neutral-950/60">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#FED7AA] bg-[#FFF8EE]">
           <div className="flex items-center gap-2">
-            <UtensilsCrossed className="w-5 h-5 text-amber-500" />
-            <h3 className="font-bold text-white text-base">
+            <UtensilsCrossed className="w-5 h-5 text-[#EA580C]" />
+            <h3 className="font-bold text-[#111827] text-lg">
               {productToEdit
-                ? language === 'th' ? 'แก้ไขรายการอาหาร' : 'Edit Menu Item'
-                : language === 'th' ? 'เพิ่มเมนูอาหารใหม่' : 'Add New Menu Item'}
+                ? language === 'th' ? 'แก้ไขสินค้าหน้าร้าน (POS Product)' : 'Edit POS Product'
+                : language === 'th' ? 'เพิ่มสินค้าหน้าร้านใหม่' : 'Add New POS Product'}
             </h3>
           </div>
-          <button onClick={onClose} className="p-1 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition">
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-[#6B7280] hover:text-[#111827] rounded-lg hover:bg-neutral-100 transition cursor-pointer"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-6 space-y-5">
+        <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-6 space-y-5 bg-[#FFFFFF]">
+          {/* Creation Mode Toggle (Pick existing vs Create new inline) */}
+          {!productToEdit && (
+            <div className="flex border border-[#FED7AA] rounded-xl overflow-hidden bg-[#FFF8EE] p-1">
+              <button
+                type="button"
+                onClick={() => setCreationMode('create_inline')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition cursor-pointer ${
+                  creationMode === 'create_inline'
+                    ? 'bg-[#EA580C] text-white shadow-xs'
+                    : 'text-[#374151] hover:text-[#111827]'
+                }`}
+              >
+                {language === 'th' ? '✨ สร้างเมนูใหม่ทันที (Inline)' : '✨ Create New Menu Inline'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setCreationMode('pick_recipe')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition cursor-pointer ${
+                  creationMode === 'pick_recipe'
+                    ? 'bg-[#EA580C] text-white shadow-xs'
+                    : 'text-[#374151] hover:text-[#111827]'
+                }`}
+              >
+                {language === 'th' ? '🔗 เลือกจากสูตรอาหารเดิม' : '🔗 Link Existing Recipe'}
+              </button>
+            </div>
+          )}
+
           {/* Photo and Link to Recipe */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-center">
             {/* Image Preview & Upload */}
@@ -208,20 +320,22 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
               />
               <div
                 onClick={() => fileInputRef.current?.click()}
-                className="w-32 h-32 rounded-2xl border-2 border-dashed border-neutral-700 hover:border-amber-500 bg-neutral-950 flex flex-col items-center justify-center cursor-pointer overflow-hidden transition relative group"
+                className="w-32 h-32 rounded-2xl border-2 border-dashed border-[#FDBA74] hover:border-[#EA580C] bg-[#FFF8EE] flex flex-col items-center justify-center cursor-pointer overflow-hidden transition relative group"
               >
                 {formData.image ? (
                   <>
                     <img src={formData.image} alt="Preview" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-semibold transition">
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-bold transition">
                       {language === 'th' ? 'เปลี่ยนรูป' : 'Change'}
                     </div>
                   </>
                 ) : (
-                  <div className="flex flex-col items-center text-center p-2 text-neutral-500">
-                    <ImageIcon className="w-8 h-8 text-neutral-600 mb-1" />
-                    <span className="text-[11px] font-semibold text-neutral-400">{language === 'th' ? 'อัปโหลดรูป' : 'Upload photo'}</span>
-                    <span className="text-[9px] text-neutral-600">ย่อรูปอัตโนมัติ</span>
+                  <div className="flex flex-col items-center text-center p-2 text-[#6B7280]">
+                    <ImageIcon className="w-8 h-8 text-[#F97316] mb-1" />
+                    <span className="text-[12px] font-bold text-[#111827]">
+                      {language === 'th' ? 'อัปโหลดรูป' : 'Upload photo'}
+                    </span>
+                    <span className="text-[10px] text-[#6B7280]">ย่อรูปอัตโนมัติ</span>
                   </div>
                 )}
               </div>
@@ -229,7 +343,7 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setFormData({ ...formData, image: '' })}
-                  className="text-[11px] text-rose-400 hover:underline mt-1"
+                  className="text-xs text-[#DC2626] hover:underline mt-1 font-bold cursor-pointer"
                 >
                   {language === 'th' ? 'ลบรูปภาพ' : 'Remove photo'}
                 </button>
@@ -237,35 +351,49 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
             </div>
 
             {/* Recipe Connection */}
-            <div className="sm:col-span-2 p-3.5 bg-neutral-950 border border-neutral-800 rounded-xl space-y-2">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400">
-                <Link className="w-3.5 h-3.5" />
-                <span>{language === 'th' ? 'เชื่อมต่อกับสูตรอาหารมาตรฐาน (Food Cost)' : 'Link with Standard Recipe'}</span>
+            <div className="sm:col-span-2 p-3.5 bg-[#FFF8EE] border border-[#FED7AA] rounded-xl space-y-2">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-[#9A3412]">
+                <Link className="w-4 h-4 text-[#EA580C]" />
+                <span>
+                  {language === 'th'
+                    ? 'ผูกกับสูตรอาหารมาตรฐาน (Single Source of Truth)'
+                    : 'Linked to Menu Recipe'}
+                </span>
               </div>
-              <p className="text-[11px] text-neutral-400">
+              <p className="text-[11px] text-[#6B7280]">
                 {language === 'th'
-                  ? 'เมื่อเชื่อมกับสูตร ต้นทุนของเมนูนี้จะถูกคำนวณและอัปเดตให้อัตโนมัติเมื่อราคาวัตถุดิบเปลี่ยน'
-                  : 'Syncs food cost dynamically whenever raw ingredient prices change.'}
+                  ? 'ชื่อเมนู ราคา และต้นทุนต่อจานจะอิงจากสูตรอาหารมาตรฐานเป็นแหล่งข้อมูลหลัก (1:1)'
+                  : 'Name, price and cost always sync from the linked Recipe (single source of truth).'}
               </p>
-              <select
-                value={formData.recipeId || ''}
-                onChange={(e) => handleSelectRecipe(e.target.value)}
-                className="w-full px-3 py-1.5 text-xs bg-neutral-900 border border-neutral-700 rounded-lg text-white"
-              >
-                <option value="">{language === 'th' ? '-- ไม่ระบุสูตร (กำหนดต้นทุนเอง) --' : '-- No recipe link --'}</option>
-                {recipes.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.nameTh} (ต้นทุน: ฿{r.totalCostPerPortion.toFixed(2)})
+              {creationMode === 'pick_recipe' || formData.recipeId ? (
+                <select
+                  value={formData.recipeId || ''}
+                  onChange={(e) => handleSelectRecipe(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-[#FFFFFF] border border-[#FDBA74] rounded-lg text-[#111827] focus:ring-2 focus:ring-[#F97316]"
+                >
+                  <option value="">
+                    {language === 'th' ? '-- เลือกสูตรอาหารเมนู --' : '-- Select Menu Recipe --'}
                   </option>
-                ))}
-              </select>
+                  {recipes.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.nameTh} (ราคา: ฿{r.actualSellingPrice || r.suggestedSellingPrice} | ต้นทุน: ฿{r.totalCostPerPortion?.toFixed(2)})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="text-xs text-[#EA580C] font-semibold bg-[#FFEDD5] p-2 rounded-lg">
+                  {language === 'th'
+                    ? '✓ ระบบจะสร้างสูตรอาหารเมนูให้โดยอัตโนมัติเมื่อกดบันทึก สามารถใส่ส่วนผสมต้นทุนได้ในหน้าสูตรอาหารภายหลัง'
+                    : '✓ A recipe of type "menu" will be created automatically upon save.'}
+                </div>
+              )}
             </div>
           </div>
 
           {/* Names */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-neutral-300 mb-1">
+              <label className="block text-xs font-bold text-[#374151] mb-1">
                 {language === 'th' ? 'ชื่อเมนู (ภาษาไทย) *' : 'Item Name (Thai) *'}
               </label>
               <input
@@ -273,32 +401,34 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
                 required
                 value={formData.nameTh}
                 onChange={(e) => setFormData({ ...formData, nameTh: e.target.value })}
-                className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-amber-500"
+                className="w-full h-[44px] px-3 text-sm bg-[#FFF8EE] border border-[#FDBA74] rounded-xl text-[#111827] focus:ring-2 focus:ring-[#F97316]"
+                placeholder="เช่น ผัดกะเพราเนื้อโคขุน"
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-neutral-300 mb-1">
+              <label className="block text-xs font-bold text-[#374151] mb-1">
                 {language === 'th' ? 'ชื่อเมนู (English)' : 'Item Name (English)'}
               </label>
               <input
                 type="text"
                 value={formData.nameEn}
                 onChange={(e) => setFormData({ ...formData, nameEn: e.target.value })}
-                className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-amber-500"
+                className="w-full h-[44px] px-3 text-sm bg-[#FFF8EE] border border-[#FDBA74] rounded-xl text-[#111827] focus:ring-2 focus:ring-[#F97316]"
+                placeholder="e.g. Beef Holy Basil"
               />
             </div>
           </div>
 
-          {/* Category & Kitchen Station */}
-          <div className="grid grid-cols-2 gap-4">
+          {/* Category & Kitchen Station & Group */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-neutral-300 mb-1">
-                {language === 'th' ? 'หมวดหมู่อาหาร' : 'Category'}
+              <label className="block text-xs font-bold text-[#374151] mb-1">
+                {language === 'th' ? 'หมวดหมู่สินค้า *' : 'Category *'}
               </label>
               <select
                 value={formData.categoryId}
                 onChange={(e) => setFormData({ ...formData, categoryId: e.target.value })}
-                className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white"
+                className="w-full h-[44px] px-3 text-sm bg-[#FFF8EE] border border-[#FDBA74] rounded-xl text-[#111827] focus:ring-2 focus:ring-[#F97316]"
               >
                 {categories.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -309,39 +439,59 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-neutral-300 mb-1">
+              <label className="block text-xs font-bold text-[#374151] mb-1">
+                {language === 'th' ? 'กลุ่มย่อย (Optional Group)' : 'Sub Group'}
+              </label>
+              <input
+                type="text"
+                value={formData.groupName || ''}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    groupName: e.target.value,
+                    groupId: e.target.value.trim() ? `grp_${Date.now()}` : undefined,
+                  })
+                }
+                placeholder="เช่น ชุดเซ็ตสุดคุ้ม, Delivery >"
+                className="w-full h-[44px] px-3 text-sm bg-[#FFF8EE] border border-[#FDBA74] rounded-xl text-[#111827] focus:ring-2 focus:ring-[#F97316]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#374151] mb-1">
                 {language === 'th' ? 'สเตชั่นส่งทำ (Kitchen Station)' : 'Kitchen Station'}
               </label>
               <select
                 value={formData.kitchenStation}
                 onChange={(e) => setFormData({ ...formData, kitchenStation: e.target.value as any })}
-                className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white"
+                className="w-full h-[44px] px-3 text-sm bg-[#FFF8EE] border border-[#FDBA74] rounded-xl text-[#111827] focus:ring-2 focus:ring-[#F97316]"
               >
-                <option value="kitchen">{t.stationKitchen}</option>
-                <option value="bar">{t.stationBar}</option>
-                <option value="grill">{t.stationGrill}</option>
-                <option value="dessert">{t.stationDessert}</option>
+                <option value="kitchen">ครัวหลัก (Kitchen)</option>
+                <option value="bar">บาร์น้ำ (Bar)</option>
+                <option value="grill">สเตชั่นเตาย่าง (Grill)</option>
+                <option value="dessert">ของหวาน (Dessert)</option>
               </select>
             </div>
           </div>
 
           {/* Price & Cost */}
-          <div className="grid grid-cols-3 gap-4 p-4 bg-neutral-950 border border-neutral-800 rounded-xl">
+          <div className="grid grid-cols-2 gap-4 p-4 bg-[#FFF8EE] border border-[#FED7AA] rounded-xl">
             <div>
-              <label className="block text-xs font-bold text-white mb-1">
-                {language === 'th' ? 'ราคาขายหน้าร้าน (฿)' : 'Selling Price (฿)'}
+              <label className="block text-xs font-bold text-[#111827] mb-1">
+                {language === 'th' ? 'ราคาขายหน้าร้าน (฿) *' : 'Selling Price (฿) *'}
               </label>
               <input
                 type="number"
                 min="0"
+                required
                 value={formData.price}
                 onChange={(e) => setFormData({ ...formData, price: Number(e.target.value) || 0 })}
-                className="w-full px-3 py-2 text-base font-bold bg-neutral-900 border border-neutral-700 rounded-lg text-emerald-400 font-mono"
+                className="w-full h-[48px] px-3.5 text-xl font-bold bg-[#FFFFFF] border border-[#FDBA74] rounded-xl text-[#EA580C] focus:ring-2 focus:ring-[#F97316]"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-neutral-400 mb-1">
+              <label className="block text-xs font-bold text-[#374151] mb-1">
                 {language === 'th' ? 'ต้นทุนอาหารต่อจาน (฿)' : 'Food Cost (฿)'}
               </label>
               <input
@@ -350,89 +500,59 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
                 step="any"
                 value={formData.cost}
                 onChange={(e) => setFormData({ ...formData, cost: Number(e.target.value) || 0 })}
-                className="w-full px-3 py-2 text-base font-bold bg-neutral-900 border border-neutral-700 rounded-lg text-rose-400 font-mono"
+                className="w-full h-[48px] px-3.5 text-xl font-bold bg-[#FFFFFF] border border-[#FED7AA] rounded-xl text-[#111827] focus:ring-2 focus:ring-[#F97316]"
               />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-neutral-400 mb-1">
-                {language === 'th' ? 'กำไรขั้นต้น (Margin)' : 'Gross Margin'}
-              </label>
-              <div className="text-base font-bold text-sky-400 font-mono py-2">
-                {formData.price > 0
-                  ? `${(((formData.price - formData.cost) / formData.price) * 100).toFixed(1)}%`
-                  : '0%'}
-              </div>
             </div>
           </div>
 
-          {/* Availability Toggle */}
-          <div className="flex items-center justify-between p-3 bg-neutral-950 border border-neutral-800 rounded-xl">
-            <div>
-              <span className="text-xs font-bold text-white">
-                {language === 'th' ? 'เปิดให้สั่งอาหารได้ (พร้อมจำหน่าย)' : 'In Stock & Available to Order'}
-              </span>
-              <p className="text-[11px] text-neutral-500">
-                {language === 'th' ? 'ปิดสวิตช์หากวัตถุดิบหมดหน้าร้าน' : 'Toggle off if item is sold out'}
-              </p>
-            </div>
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={formData.isAvailable}
-                onChange={(e) => setFormData({ ...formData, isAvailable: e.target.checked })}
-                className="sr-only peer"
-              />
-              <div className="w-11 h-6 bg-neutral-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
-            </label>
-          </div>
-
-          {/* Variants Manager */}
-          <div className="space-y-3">
+          {/* Variants (e.g. Regular / Extra) */}
+          <div className="space-y-2 border border-[#FED7AA] rounded-xl p-3.5 bg-[#FFFFFF]">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-white">
-                {language === 'th' ? 'ตัวเลือกขนาด / ชนิดเนื้อสัตว์ (Variants)' : 'Size & Protein Variants'}
+              <span className="text-xs font-bold text-[#111827]">
+                {language === 'th' ? 'ขนาด / ตัวเลือกไซซ์ (Variants)' : 'Variants'}
               </span>
               <button
                 type="button"
                 onClick={handleAddVariant}
-                className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1"
+                className="text-xs text-[#EA580C] font-bold hover:underline flex items-center gap-1 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
-                {language === 'th' ? 'เพิ่มตัวเลือก' : 'Add Variant'}
+                <span>{language === 'th' ? 'เพิ่มไซซ์' : 'Add Variant'}</span>
               </button>
             </div>
-
             {formData.variants && formData.variants.length > 0 && (
-              <div className="space-y-2">
-                {formData.variants.map((variant, idx) => (
-                  <div key={variant.id} className="flex items-center gap-2 p-2 bg-neutral-950 border border-neutral-800 rounded-lg text-xs">
+              <div className="space-y-2 pt-1">
+                {formData.variants.map((v, i) => (
+                  <div key={v.id} className="flex items-center gap-2 bg-[#FFF8EE] p-2 rounded-lg border border-[#FED7AA]">
                     <input
                       type="text"
-                      placeholder="ชื่อตัวเลือก (ไทย)"
-                      value={variant.nameTh}
+                      placeholder="ชื่อไซซ์ (ไทย)"
+                      value={v.nameTh}
                       onChange={(e) => {
-                        const updated = [...(formData.variants || [])];
-                        updated[idx].nameTh = e.target.value;
-                        setFormData({ ...formData, variants: updated });
+                        const copy = [...formData.variants!];
+                        copy[i].nameTh = e.target.value;
+                        setFormData({ ...formData, variants: copy });
                       }}
-                      className="flex-1 px-2 py-1 bg-neutral-900 border border-neutral-700 rounded text-white"
+                      className="flex-1 h-[36px] px-2 text-xs bg-[#FFFFFF] border border-[#FED7AA] rounded-lg"
                     />
-                    <input
-                      type="number"
-                      placeholder="เพิ่มราคา (+฿)"
-                      value={variant.priceDelta}
-                      onChange={(e) => {
-                        const updated = [...(formData.variants || [])];
-                        updated[idx].priceDelta = Number(e.target.value) || 0;
-                        setFormData({ ...formData, variants: updated });
-                      }}
-                      className="w-24 px-2 py-1 bg-neutral-900 border border-neutral-700 rounded text-white text-right font-mono"
-                    />
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs text-[#6B7280]">+฿</span>
+                      <input
+                        type="number"
+                        placeholder="เพิ่มราคา"
+                        value={v.priceDelta}
+                        onChange={(e) => {
+                          const copy = [...formData.variants!];
+                          copy[i].priceDelta = Number(e.target.value) || 0;
+                          setFormData({ ...formData, variants: copy });
+                        }}
+                        className="w-20 h-[36px] px-2 text-xs bg-[#FFFFFF] border border-[#FED7AA] rounded-lg font-bold"
+                      />
+                    </div>
                     <button
                       type="button"
-                      onClick={() => handleRemoveVariant(variant.id)}
-                      className="p-1 text-neutral-500 hover:text-rose-400"
+                      onClick={() => handleRemoveVariant(v.id)}
+                      className="p-1 text-[#DC2626] hover:bg-[#FEE2E2] rounded-lg cursor-pointer"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -442,49 +562,48 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
             )}
           </div>
 
-          {/* Modifier Groups Manager */}
-          <div className="space-y-3">
+          {/* Modifier Groups */}
+          <div className="space-y-2 border border-[#FED7AA] rounded-xl p-3.5 bg-[#FFFFFF]">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-white">
-                {language === 'th' ? 'ตัวเลือกเพิ่มเติม / ความหวาน / ความเผ็ด (Modifiers)' : 'Modifier Groups'}
+              <span className="text-xs font-bold text-[#111827]">
+                {language === 'th' ? 'กลุ่มท็อปปิ้ง / ระดับความเผ็ด (Modifier Groups)' : 'Modifier Groups'}
               </span>
               <button
                 type="button"
                 onClick={handleAddModifierGroup}
-                className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1"
+                className="text-xs text-[#EA580C] font-bold hover:underline flex items-center gap-1 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
-                {language === 'th' ? 'เพิ่มกลุ่มตัวเลือก' : 'Add Modifier Group'}
+                <span>{language === 'th' ? 'เพิ่มกลุ่มตัวเลือก' : 'Add Group'}</span>
               </button>
             </div>
-
             {formData.modifierGroups && formData.modifierGroups.length > 0 && (
-              <div className="space-y-3">
-                {formData.modifierGroups.map((group, gIdx) => (
-                  <div key={group.id} className="p-3 bg-neutral-950 border border-neutral-800 rounded-xl space-y-2 text-xs">
-                    <div className="flex items-center justify-between">
+              <div className="space-y-2 pt-1">
+                {formData.modifierGroups.map((grp, gi) => (
+                  <div key={grp.id} className="p-2.5 bg-[#FFF8EE] rounded-lg border border-[#FED7AA] space-y-2">
+                    <div className="flex items-center justify-between gap-2">
                       <input
                         type="text"
-                        value={group.nameTh}
+                        placeholder="ชื่อกลุ่ม เช่น ระดับความเผ็ด"
+                        value={grp.nameTh}
                         onChange={(e) => {
-                          const updated = [...(formData.modifierGroups || [])];
-                          updated[gIdx].nameTh = e.target.value;
-                          setFormData({ ...formData, modifierGroups: updated });
+                          const copy = [...formData.modifierGroups!];
+                          copy[gi].nameTh = e.target.value;
+                          setFormData({ ...formData, modifierGroups: copy });
                         }}
-                        className="px-2 py-1 bg-neutral-900 border border-neutral-700 rounded text-white font-bold"
+                        className="flex-1 h-[36px] px-2 text-xs font-bold bg-[#FFFFFF] border border-[#FED7AA] rounded-lg"
                       />
                       <button
                         type="button"
-                        onClick={() => handleRemoveModifierGroup(group.id)}
-                        className="p-1 text-neutral-500 hover:text-rose-400"
+                        onClick={() => handleRemoveModifierGroup(grp.id)}
+                        className="p-1 text-[#DC2626] hover:bg-[#FEE2E2] rounded-lg cursor-pointer"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
-
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      {group.options.map((opt) => (
-                        <span key={opt.id} className="px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-[11px] text-neutral-300">
+                    <div className="flex flex-wrap gap-1.5 pl-2">
+                      {grp.options.map((opt) => (
+                        <span key={opt.id} className="px-2 py-0.5 rounded-full bg-[#FFFFFF] border border-[#FED7AA] text-[11px] text-[#374151]">
                           {opt.nameTh} {opt.priceDelta > 0 && `(+฿${opt.priceDelta})`}
                         </span>
                       ))}
@@ -495,19 +614,20 @@ export const ProductMenuModal: React.FC<ProductMenuModalProps> = ({
             )}
           </div>
 
-          <div className="flex items-center justify-end gap-2 pt-4 border-t border-neutral-800">
+          {/* Action Buttons */}
+          <div className="flex justify-end gap-3 pt-3 border-t border-[#FED7AA]">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold text-neutral-400 hover:text-white bg-neutral-800 rounded-lg transition"
+              className="px-5 py-2.5 rounded-xl border border-[#FED7AA] bg-[#FFFFFF] hover:bg-neutral-100 text-[#374151] font-bold text-sm cursor-pointer"
             >
-              {t.cancel}
+              {language === 'th' ? 'ยกเลิก' : 'Cancel'}
             </button>
             <button
               type="submit"
-              className="px-5 py-2 text-xs font-bold text-neutral-950 bg-amber-500 hover:bg-amber-400 rounded-lg shadow-lg shadow-amber-500/20 transition"
+              className="px-6 py-2.5 rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold text-sm shadow-sm cursor-pointer"
             >
-              {t.save}
+              {language === 'th' ? 'บันทึกสินค้า' : 'Save Product'}
             </button>
           </div>
         </form>

@@ -269,6 +269,20 @@ export interface PosCategory {
 
 export type ProductCategory = PosCategory;
 
+/**
+ * PosGroup (optional sub-grid tile inside a category, e.g. "Delivery >")
+ * { id, categoryId, name{th,en}, imageId?, sortOrder }
+ */
+export interface PosGroup {
+  id: string;
+  categoryId: string;
+  name: { th: string; en: string };
+  nameTh?: string;
+  nameEn?: string;
+  imageId?: string;
+  sortOrder: number;
+}
+
 export interface ModifierOption {
   id: string;
   name?: string;

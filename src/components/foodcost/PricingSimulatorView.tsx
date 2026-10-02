@@ -31,7 +31,15 @@ import {
 } from '../../utils/calc';
 import { DEFAULT_RECIPE_CATEGORIES } from '../../types';
 
-export const PricingSimulatorView: React.FC = () => {
+interface PricingSimulatorViewProps {
+  initialRecipeId?: string | null;
+  onClearInitialRecipeId?: () => void;
+}
+
+export const PricingSimulatorView: React.FC<PricingSimulatorViewProps> = ({
+  initialRecipeId,
+  onClearInitialRecipeId,
+}) => {
   const { t, formatCurrency } = useTranslation();
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -55,6 +63,16 @@ export const PricingSimulatorView: React.FC = () => {
     loadData();
   }, []);
 
+  useEffect(() => {
+    if (initialRecipeId && recipes.length > 0) {
+      const match = recipes.find((r) => r.id === initialRecipeId);
+      if (match) {
+        handleOpenPanel(match);
+        onClearInitialRecipeId?.();
+      }
+    }
+  }, [initialRecipeId, recipes]);
+
   const loadData = async () => {
     const [recList, ingList, prodList, savedSettings] = await Promise.all([
       dbGetAll<Recipe>('recipes'),
@@ -70,7 +88,7 @@ export const PricingSimulatorView: React.FC = () => {
     }
   };
 
-  const categories =
+  const categories: readonly string[] =
     settings?.recipeCategories && settings.recipeCategories.length > 0
       ? settings.recipeCategories
       : DEFAULT_RECIPE_CATEGORIES;

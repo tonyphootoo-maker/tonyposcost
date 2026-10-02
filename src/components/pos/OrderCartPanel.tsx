@@ -26,6 +26,7 @@ import {
   Search,
 } from 'lucide-react';
 import { dbGetAll } from '../../db';
+import { showToast } from '../common/ToastContainer';
 
 interface OrderCartPanelProps {
   currentOrder: Order;
@@ -76,6 +77,36 @@ export const OrderCartPanel: React.FC<OrderCartPanelProps> = ({
   };
 
   const handleRemoveItem = (itemId: string) => {
+    const targetItem = currentOrder.items.find((item) => item.id === itemId);
+    if (!targetItem) return;
+
+    const wasSentToKitchen = Boolean(
+      targetItem.sentToKitchenAt ||
+      targetItem.kitchenStatus === 'cooking' ||
+      targetItem.kitchenStatus === 'ready' ||
+      targetItem.kitchenStatus === 'preparing'
+    );
+
+    if (wasSentToKitchen) {
+      if (
+        !confirm(
+          language === 'th'
+            ? `รายการ "${targetItem.productNameTh || targetItem.name}" ส่งเข้าครัวแล้ว ต้องการยกเลิก (VOID) ใช่หรือไม่?`
+            : `Item "${targetItem.productNameTh || targetItem.name}" was already sent to kitchen. Confirm VOID?`
+        )
+      ) {
+        return;
+      }
+      showToast({
+        title: language === 'th' ? 'ยกเลิกรายการส่งครัว (VOID)' : 'Item Voided',
+        message:
+          language === 'th'
+            ? `ส่งใบยกเลิก (VOID Ticket) ไปยังครัวแล้ว: ${targetItem.productNameTh || targetItem.name}`
+            : `Sent VOID ticket to kitchen: ${targetItem.productNameTh || targetItem.name}`,
+        type: 'info',
+      });
+    }
+
     const updatedItems = currentOrder.items.filter((item) => item.id !== itemId);
     recalculateAndNotify(updatedItems, currentOrder.orderType, currentOrder.discountAmount);
   };

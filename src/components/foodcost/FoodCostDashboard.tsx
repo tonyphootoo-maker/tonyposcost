@@ -27,9 +27,13 @@ import { NavTab } from '../layout/Sidebar';
 
 interface FoodCostDashboardProps {
   onNavigateTab?: (tab: NavTab) => void;
+  onNavigateToPricing?: (recipeId: string) => void;
 }
 
-export const FoodCostDashboard: React.FC<FoodCostDashboardProps> = ({ onNavigateTab }) => {
+export const FoodCostDashboard: React.FC<FoodCostDashboardProps> = ({
+  onNavigateTab,
+  onNavigateToPricing,
+}) => {
   const { t, formatCurrency, formatDate } = useTranslation();
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -313,7 +317,11 @@ export const FoodCostDashboard: React.FC<FoodCostDashboardProps> = ({ onNavigate
               top5Profitable.map((item, idx) => (
                 <div
                   key={item.recipe.id}
-                  onClick={() => onNavigateTab?.('fc_pricing')}
+                  onClick={() =>
+                    onNavigateToPricing
+                      ? onNavigateToPricing(item.recipe.id)
+                      : onNavigateTab?.('fc_pricing')
+                  }
                   className="p-3.5 hover:bg-orange-50/40 cursor-pointer transition-colors flex items-center justify-between text-xs"
                 >
                   <div className="flex items-center gap-2.5">
@@ -359,7 +367,11 @@ export const FoodCostDashboard: React.FC<FoodCostDashboardProps> = ({ onNavigate
               bottom5Profitable.map((item, idx) => (
                 <div
                   key={item.recipe.id}
-                  onClick={() => onNavigateTab?.('fc_pricing')}
+                  onClick={() =>
+                    onNavigateToPricing
+                      ? onNavigateToPricing(item.recipe.id)
+                      : onNavigateTab?.('fc_pricing')
+                  }
                   className="p-3.5 hover:bg-orange-50/40 cursor-pointer transition-colors flex items-center justify-between text-xs"
                 >
                   <div className="flex items-center gap-2.5">
