@@ -75,7 +75,7 @@ export class LocalOnlineOrderSource implements OnlineOrderSource {
         unitPrice,
         unitCostSnapshot: typeof itemObj.unitCostSnapshot === 'number' ? itemObj.unitCostSnapshot : undefined,
         modifiers: Array.isArray(itemObj.modifiers)
-          ? itemObj.modifiers.map((m: any) => ({
+          ? (itemObj.modifiers as Array<Record<string, unknown>>).map((m) => ({
               groupName: String(m.groupName || 'ตัวเลือก'),
               optionName: String(m.optionName || ''),
               priceDelta: Number(m.priceDelta) || 0,
@@ -94,8 +94,9 @@ export class LocalOnlineOrderSource implements OnlineOrderSource {
     const total = typeof obj.total === 'number' ? obj.total : subtotal + deliveryFee;
 
     const validSources = ['grab', 'lineman', 'foodpanda', 'custom_web', 'online'] as const;
-    const source = validSources.includes(obj.source as any)
-      ? (obj.source as IngestedOnlineOrder['source'])
+    const sourceCandidate = String(obj.source || 'online');
+    const source = (validSources as readonly string[]).includes(sourceCandidate)
+      ? (sourceCandidate as IngestedOnlineOrder['source'])
       : 'online';
 
     return {
@@ -130,8 +131,9 @@ export class LocalOnlineOrderSource implements OnlineOrderSource {
       }
 
       return { success: true, orders: validOrders };
-    } catch (err: any) {
-      return { success: false, error: `รูปแบบ JSON ไม่ถูกต้อง: ${err?.message || 'SyntaxError'}` };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'SyntaxError';
+      return { success: false, error: `รูปแบบ JSON ไม่ถูกต้อง: ${msg}` };
     }
   }
 

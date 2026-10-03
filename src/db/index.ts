@@ -215,6 +215,29 @@ export async function dbQueryByIndex<T>(
   }
 }
 
+/**
+ * ค้นหาบิลตามช่วงวันที่ผ่าน IndexedDB Index ('by-createdAt')
+ * รวดเร็วและรองรับข้อมูลระดับหลายพันบิลโดยไม่ทำให้ UI ช้า
+ */
+export async function getOrdersByDateRange(startDateIso: string, endDateIso: string): Promise<Order[]> {
+  try {
+    const db = await getDB();
+    const startBound = `${startDateIso.split('T')[0]}T00:00:00.000Z`;
+    const endBound = `${endDateIso.split('T')[0]}T23:59:59.999Z`;
+    const range = IDBKeyRange.bound(startBound, endBound);
+    return await db.getAllFromIndex('orders', 'by-createdAt', range);
+  } catch (error) {
+    console.error('Error fetching orders by date range via index:', error);
+    const all = await dbGetAll<Order>('orders');
+    const start = startDateIso.split('T')[0];
+    const end = endDateIso.split('T')[0];
+    return all.filter((o) => {
+      const d = (o.paidAt || o.createdAt || '').split('T')[0];
+      return d >= start && d <= end;
+    });
+  }
+}
+
 // Full Export / Backup to JSON
 export async function exportDatabaseToJSON(): Promise<string> {
   try {
@@ -1015,8 +1038,21 @@ export async function migrateSchemaIfNeeded(db: IDBPDatabase, metaRecord: Record
   }
 }
 
+export async function isDatabaseInitialized(): Promise<boolean> {
+  try {
+    const db = await getDB();
+    const meta = await db.get('meta', 'app_meta');
+    return !!meta;
+  } catch {
+    return false;
+  }
+}
+
 // Initialize and seed database if not yet populated
-export async function initializeDatabase(forceReset: boolean = false): Promise<void> {
+export async function initializeDatabase(
+  loadSample: boolean = true,
+  forceReset: boolean = false
+): Promise<void> {
   const db = await getDB();
   const meta = await db.get('meta', 'app_meta');
 
@@ -1046,47 +1082,78 @@ export async function initializeDatabase(forceReset: boolean = false): Promise<v
     }
   }
 
+  // Import dynamic sample data generator
+  const {
+    SAMPLE_SETTINGS,
+    SAMPLE_CATEGORIES,
+    SAMPLE_INGREDIENTS,
+    SAMPLE_RECIPES,
+    SAMPLE_PRODUCTS,
+    SAMPLE_TABLES,
+    SAMPLE_PROMOTIONS,
+    SAMPLE_MEMBERS,
+    SAMPLE_EXPENSES,
+    SAMPLE_RECURRING_EXPENSES,
+    generate30SampleBills,
+  } = await import('../data/sampleData');
+
   // Populate Default Settings
-  await db.put('settings', DEFAULT_SETTINGS);
+  await db.put('settings', SAMPLE_SETTINGS);
 
-  // Populate Categories
-  for (const cat of INITIAL_CATEGORIES) {
-    await db.put('categories', cat);
-  }
-
-  // Populate Ingredients
-  for (const ing of INITIAL_INGREDIENTS) {
-    await db.put('ingredients', ing);
-  }
-
-  // Populate Recipes
-  for (const rec of INITIAL_RECIPES) {
-    await db.put('recipes', rec);
-  }
-
-  // Populate Products
-  for (const prod of INITIAL_PRODUCTS) {
-    await db.put('products', prod);
-  }
-
-  // Populate Tables
-  for (const tbl of INITIAL_TABLES) {
+  // Populate Tables (8 tables in 2 zones)
+  for (const tbl of SAMPLE_TABLES) {
     await db.put('tables', tbl);
   }
 
-  // Populate Members
-  for (const mem of INITIAL_MEMBERS) {
-    await db.put('members', mem);
+  // Populate Categories
+  for (const cat of SAMPLE_CATEGORIES) {
+    await db.put('categories', cat);
   }
 
-  // Populate Promotions
-  for (const promo of INITIAL_PROMOTIONS) {
-    await db.put('promotions', promo);
-  }
+  if (loadSample) {
+    // Populate Ingredients (~12 Thai ingredients)
+    for (const ing of SAMPLE_INGREDIENTS) {
+      await db.put('ingredients', ing);
+    }
 
-  // Populate Expenses
-  for (const exp of INITIAL_EXPENSES) {
-    await db.put('expenses', exp);
+    // Populate Recipes (Sub-recipe "น้ำจิ้มซีฟู้ด" + 4 Menus)
+    for (const rec of SAMPLE_RECIPES) {
+      await db.put('recipes', rec);
+    }
+
+    // Populate Products (linked with modifiers: ความเผ็ด, ไข่ดาว +฿10, ไซซ์)
+    for (const prod of SAMPLE_PRODUCTS) {
+      await db.put('products', prod);
+    }
+
+    // Populate Members (3 members)
+    for (const mem of SAMPLE_MEMBERS) {
+      await db.put('members', mem);
+    }
+
+    // Populate Promotions (2 promotions)
+    for (const promo of SAMPLE_PROMOTIONS) {
+      await db.put('promotions', promo);
+    }
+
+    // Populate Daily Expenses
+    for (const exp of SAMPLE_EXPENSES) {
+      await db.put('expenses', exp);
+    }
+
+    // Populate Recurring Expenses in meta store and localStorage
+    await db.put('meta', { id: 'recurring_expenses', list: SAMPLE_RECURRING_EXPENSES });
+    try {
+      localStorage.setItem('tonys_recurring_expenses', JSON.stringify(SAMPLE_RECURRING_EXPENSES));
+    } catch {
+      // ignore
+    }
+
+    // Generate ~30 sample paid bills across past 14 days with cost snapshots
+    const sampleBills = generate30SampleBills();
+    for (const bill of sampleBills) {
+      await db.put('orders', bill);
+    }
   }
 
   // Create an initial active Shift so POS is ready to sell right away!
@@ -1106,63 +1173,6 @@ export async function initializeDatabase(forceReset: boolean = false): Promise<v
   };
   await db.put('shifts', initialShift);
 
-  // Create a couple of completed sample orders for realistic reports
-  const sampleOrder1: Order = {
-    id: `ord_${Date.now() - 7200000}`,
-    orderNumber: '#TK-101',
-    tableName: 'T-01',
-    tableId: 'tbl_t1',
-    orderType: 'dine_in',
-    guestCount: 2,
-    status: 'paid',
-    items: [
-      {
-        id: 'item_1',
-        productId: 'prod_pad_thai',
-        productNameTh: 'ผัดไทยกุ้งสดโบราณ',
-        productNameEn: 'Pad Thai Goong Sod',
-        basePrice: 165,
-        unitCost: 62.51,
-        quantity: 2,
-        lineTotal: 330,
-        kitchenStatus: 'served',
-        kitchenStation: 'kitchen',
-        orderedAt: new Date(Date.now() - 7200000).toISOString(),
-      },
-      {
-        id: 'item_2',
-        productId: 'prod_thai_tea',
-        productNameTh: 'ชาไทยเย็นพรีเมียม',
-        productNameEn: 'Signature Thai Iced Tea',
-        basePrice: 65,
-        unitCost: 18.65,
-        quantity: 2,
-        lineTotal: 130,
-        kitchenStatus: 'served',
-        kitchenStation: 'bar',
-        orderedAt: new Date(Date.now() - 7200000).toISOString(),
-      },
-    ],
-    subtotal: 460,
-    discountAmount: 0,
-    vatAmount: 30.09, // 7% inclusive
-    serviceChargeAmount: 0,
-    totalAmount: 460,
-    totalCost: 162.32,
-    grossProfit: 297.68,
-    paymentMethod: 'promptpay',
-    createdAt: new Date(Date.now() - 7200000).toISOString(),
-    paidAt: new Date(Date.now() - 6000000).toISOString(),
-    shiftId: initialShift.id,
-  };
-  await db.put('orders', sampleOrder1);
-
-  // Update shift stats with sample order
-  initialShift.totalSales = 460;
-  initialShift.promptpaySales = 460;
-  initialShift.totalOrders = 1;
-  await db.put('shifts', initialShift);
-
   // Store metadata
   const appMeta: AppMetadata = {
     schemaVersion: 1,
@@ -1171,5 +1181,9 @@ export async function initializeDatabase(forceReset: boolean = false): Promise<v
   };
   await db.put('meta', { id: 'app_meta', ...appMeta });
 
-  notifyToast('success', 'เริ่มต้นระบบและโหลดข้อมูลตัวอย่างเรียบร้อย', 'Database initialized with sample data');
+  notifyToast(
+    'success',
+    loadSample ? 'โหลดข้อมูลตัวอย่างเรียบร้อย พร้อมใช้งานทุกรายงาน' : 'เริ่มต้นระบบเปล่าเรียบร้อย',
+    loadSample ? 'Database initialized with sample bistro data' : 'Started with empty database'
+  );
 }

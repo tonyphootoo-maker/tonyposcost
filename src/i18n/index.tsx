@@ -7,7 +7,7 @@ export const translations = { th, en };
 
 export type TranslateFunction = {
   (key: TranslationKey, params?: Record<string, string | number>): string;
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 interface I18nContextType {
@@ -48,11 +48,12 @@ export const I18nProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('tonys_kitchen_buddhist_year', String(val));
   };
 
-  const currentDict = translations[language] || translations.th;
+  const currentDict: Record<string, string> = (translations[language] as unknown as Record<string, string>) || translations.th;
+  const thDict: Record<string, string> = translations.th as unknown as Record<string, string>;
 
   // Function callable t(key, params) and object accessible t[key]
   const tFunction = ((key: TranslationKey, params?: Record<string, string | number>): string => {
-    let text = (currentDict as any)[key] ?? (translations.th as any)[key] ?? String(key);
+    let text = currentDict[key] ?? thDict[key] ?? String(key);
     if (params) {
       Object.entries(params).forEach(([k, v]) => {
         text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
@@ -65,9 +66,9 @@ export const I18nProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const t = new Proxy(tFunction, {
     get(target, prop: string) {
       if (prop in target) {
-        return (target as any)[prop];
+        return (target as Record<string, unknown>)[prop];
       }
-      return (currentDict as any)[prop] ?? (translations.th as any)[prop] ?? prop;
+      return currentDict[prop] ?? thDict[prop] ?? prop;
     },
   });
 

@@ -5,10 +5,20 @@ import {
   PrinterStation,
   PaymentMethodConfig,
   Language,
+  Order,
 } from '../../types';
-import { dbGet, dbPut, exportDatabaseToJSON, importDatabaseFromJSON, initializeDatabase } from '../../db';
+import {
+  dbGet,
+  dbPut,
+  dbGetAll,
+  dbClear,
+  exportDatabaseToJSON,
+  importDatabaseFromJSON,
+  initializeDatabase,
+} from '../../db';
 import { useTranslation } from '../../i18n';
 import { generatePromptPayPayload } from '../../utils/promptpay';
+import { exportToCSV } from '../../utils/csv';
 import QRCode from 'qrcode';
 import {
   X,
@@ -33,12 +43,18 @@ import {
   Clock,
   Sparkles,
   Edit2,
+  FileSpreadsheet,
+  HardDrive,
+  Info,
+  Calendar,
 } from 'lucide-react';
 import { showToast } from '../common/ToastContainer';
 import {
   DEFAULT_INGREDIENT_CATEGORIES,
   DEFAULT_RECIPE_CATEGORIES,
   DEFAULT_EXPENSE_CATEGORIES,
+  DEFAULT_PAYMENT_METHODS,
+  DEFAULT_DELIVERY_PLATFORMS,
 } from '../../types';
 
 interface SettingsModalProps {
@@ -49,10 +65,11 @@ interface SettingsModalProps {
 
 type SettingsTab =
   | 'store'
-  | 'foodcost_platforms'
   | 'tax_service'
-  | 'promptpay'
+  | 'foodcost_platforms'
   | 'receipt_printers'
+  | 'promptpay'
+  | 'payment_methods'
   | 'categories_loyalty'
   | 'backup';
 
@@ -61,15 +78,50 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   onSettingsUpdated,
 }) => {
-  const { t, language, setLanguage, useBuddhistYear, setUseBuddhistYear } = useTranslation();
+  const { t, language, setLanguage, useBuddhistYear, setUseBuddhistYear, formatCurrency } = useTranslation();
   const [activeTab, setActiveTab] = useState<SettingsTab>('store');
   const [settings, setSettings] = useState<RestaurantSettings | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [promptPayQRDataUrl, setPromptPayQRDataUrl] = useState<string>('');
-  const [importStatus, setImportStatus] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // New Category / Platform / Station Inputs
+  // Storage Health State (Section 8.4)
+  const [storageEstimate, setStorageEstimate] = useState<{
+    usageMb: number;
+    quotaMb: number;
+    percent: number;
+    persisted: boolean;
+  }>({ usageMb: 0, quotaMb: 0, percent: 0, persisted: false });
+
+  // CSV Date Range Export State
+  const [csvStartDate, setCsvStartDate] = useState(
+    new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
+  );
+  const [csvEndDate, setCsvEndDate] = useState(
+    new Date().toISOString().split('T')[0]
+  );
+
+  // JSON Import Summary Confirmation Modal State
+  const [pendingImportData, setPendingImportData] = useState<{
+    rawJson: string;
+    counts: {
+      ingredients: number;
+      recipes: number;
+      products: number;
+      orders: number;
+      members: number;
+      categories: number;
+      tables: number;
+    };
+    version: number;
+    exportedAt?: string;
+  } | null>(null);
+
+  // Clear All Data 2-Step Confirmation State
+  const [isClearAllModalOpen, setIsClearAllModalOpen] = useState(false);
+  const [clearConfirmText, setClearConfirmText] = useState('');
+
+  // Form Inputs for Adding New Items
   const [newPlatformName, setNewPlatformName] = useState('');
   const [newPlatformGP, setNewPlatformGP] = useState(30);
   const [newPlatformHasVat, setNewPlatformHasVat] = useState(false);
@@ -80,28 +132,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [newStationName, setNewStationName] = useState('');
   const [newStationWidth, setNewStationWidth] = useState<number>(80);
 
+  const [newPaymentMethodName, setNewPaymentMethodName] = useState('');
+
   useEffect(() => {
     if (isOpen) {
       loadSettings();
+      checkStorageHealth();
     }
   }, [isOpen]);
+
+  const checkStorageHealth = async () => {
+    if (navigator.storage && navigator.storage.estimate) {
+      try {
+        const est = await navigator.storage.estimate();
+        const usageMb = Number(((est.usage || 0) / (1024 * 1024)).toFixed(2));
+        const quotaMb = Number(((est.quota || 1) / (1024 * 1024)).toFixed(2));
+        const percent = Number((((est.usage || 0) / (est.quota || 1)) * 100).toFixed(2));
+        let persisted = false;
+        if (navigator.storage.persisted) {
+          persisted = await navigator.storage.persisted();
+        }
+        setStorageEstimate({ usageMb, quotaMb, percent, persisted });
+      } catch (err) {
+        console.error('Storage estimate error:', err);
+      }
+    }
+  };
 
   const loadSettings = async () => {
     const s = await dbGet<RestaurantSettings>('settings', 'current_settings');
     if (s) {
-      // Ensure defaults for all Section 8.4 fields
       const filled: RestaurantSettings = {
         ...s,
         defaultTargetFoodCostPercent: s.defaultTargetFoodCostPercent ?? 30,
         defaultOverheadPercent: s.defaultOverheadPercent ?? 0,
         priceRounding: s.priceRounding ?? 1,
-        platforms: s.platforms && s.platforms.length > 0
-          ? s.platforms
-          : [
-              { id: 'grab', name: 'GrabFood', gpPercent: 30, gpHasVat: false },
-              { id: 'lineman', name: 'LINE MAN', gpPercent: 30, gpHasVat: false },
-              { id: 'foodpanda', name: 'Foodpanda', gpPercent: 30, gpHasVat: false },
-            ],
+        platforms: s.platforms && s.platforms.length > 0 ? s.platforms : [...DEFAULT_DELIVERY_PLATFORMS],
         ingredientCategories: s.ingredientCategories && s.ingredientCategories.length > 0
           ? s.ingredientCategories
           : [...DEFAULT_INGREDIENT_CATEGORIES],
@@ -115,9 +181,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           ? s.printerStations
           : [
               { id: 'cashier', name: 'แคชเชียร์หน้าร้าน', paperWidthMm: 80 },
-              { id: 'kitchen', name: 'ครัวร้อน', paperWidthMm: 80 },
+              { id: 'kitchen', name: 'ครัวหลัก', paperWidthMm: 80 },
               { id: 'bar', name: 'บาร์เครื่องดื่ม', paperWidthMm: 58 },
             ],
+        paymentMethods: s.paymentMethods && s.paymentMethods.length > 0
+          ? s.paymentMethods
+          : [...DEFAULT_PAYMENT_METHODS],
         loyalty: s.loyalty ?? {
           enabled: true,
           spendPerPoint: 25,
@@ -138,12 +207,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
     try {
       const payload = generatePromptPayPayload(promptPayId, 100);
-      const qrUrl = await QRCode.toDataURL(payload, {
+      const url = await QRCode.toDataURL(payload, {
         width: 180,
         margin: 1,
         color: { dark: '#000000', light: '#ffffff' },
       });
-      setPromptPayQRDataUrl(qrUrl);
+      setPromptPayQRDataUrl(url);
     } catch {
       setPromptPayQRDataUrl('');
     }
@@ -152,104 +221,320 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleSave = async () => {
     if (!settings) return;
     setIsSaving(true);
-
-    // Sync sub-objects for pure calc functions
-    const toSave: RestaurantSettings = {
-      ...settings,
-      vat: {
-        enabled: settings.vatEnabled,
-        ratePercent: settings.vatRate,
-        priceIncludesVat: settings.vatInclusive,
-      },
-      serviceCharge: {
-        enabled: settings.serviceChargeEnabled,
-        ratePercent: settings.serviceChargeRate,
-        countAsRevenue: settings.serviceChargeCountAsRevenue ?? false,
-      },
-      receipt: {
-        shopAddress: settings.addressTh,
-        phone: settings.phone,
-        taxId: settings.taxId,
-        footerText: settings.receiptFooterMessage,
-        paperWidthMm: settings.receiptWidth === '58mm' ? 58 : 80,
-      },
-    };
-
-    await dbPut('settings', toSave);
-    setIsSaving(false);
-    showToast({ title: 'บันทึกการตั้งค่าแล้ว', message: 'อัปเดตข้อมูลระบบเรียบร้อย', type: 'success' });
-    onSettingsUpdated();
-    onClose();
-  };
-
-  const handleExport = async () => {
     try {
-      const jsonStr = await exportDatabaseToJSON();
-      const blob = new Blob([jsonStr], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const date = new Date().toISOString().split('T')[0];
-      a.href = url;
-      a.download = `tonys-kitchen-backup-${date}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-
-      // Refresh lastBackupAt locally
-      const updated = { ...settings!, lastBackupAt: new Date().toISOString() };
-      setSettings(updated);
+      await dbPut('settings', settings);
+      showToast({
+        title: language === 'th' ? 'บันทึกสำเร็จ' : 'Settings Saved',
+        message: language === 'th' ? 'บันทึกการตั้งค่าระบบเรียบร้อยแล้ว' : 'Settings updated successfully',
+        type: 'success',
+      });
       onSettingsUpdated();
-      showToast({ title: 'ส่งออกสำเร็จ', message: 'ดาวน์โหลดไฟล์สำรองข้อมูลเรียบร้อย', type: 'success' });
-    } catch (err) {
-      console.error(err);
-      showToast({ title: 'ส่งออกล้มเหลว', message: 'ไม่สามารถสร้างไฟล์สำรองได้', type: 'error' });
+      onClose();
+    } catch {
+      showToast({
+        title: 'Error',
+        message: language === 'th' ? 'ไม่สามารถบันทึกการตั้งค่าได้' : 'Failed to save settings',
+        type: 'error',
+      });
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Section 8.4: Export JSON Backup (Blob + Anchor)
+  const handleExportJSON = async () => {
+    try {
+      const jsonStr = await exportDatabaseToJSON();
+      const dateStr = new Date().toISOString().split('T')[0];
+      const filename = `tonys-kitchen-backup-${dateStr}.json`;
+
+      const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      // Update settings state with new lastBackupAt
+      const now = new Date().toISOString();
+      if (settings) {
+        setSettings({ ...settings, lastBackupAt: now });
+      }
+
+      showToast({
+        title: language === 'th' ? 'สำรองข้อมูลสำเร็จ' : 'Export Complete',
+        message: `ดาวน์โหลดไฟล์ ${filename} แล้ว`,
+        type: 'success',
+      });
+    } catch {
+      showToast({
+        title: 'Error',
+        message: language === 'th' ? 'ไม่สามารถส่งออกข้อมูลได้' : 'Export failed',
+        type: 'error',
+      });
+    }
+  };
+
+  // Section 8.4: Import JSON with Validation & Confirmation Summary
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = async (event) => {
-      const content = event.target?.result as string;
-      setImportStatus(language === 'th' ? 'กำลังตรวจสอบและกู้คืนข้อมูล...' : 'Validating & restoring data...');
-      const success = await importDatabaseFromJSON(content);
-      if (success) {
-        setImportStatus(language === 'th' ? 'กู้คืนสำเร็จ! กำลังโหลดใหม่...' : 'Restored successfully! Reloading...');
-        setTimeout(() => {
-          window.location.reload();
-        }, 1200);
-      } else {
-        setImportStatus(language === 'th' ? 'ล้มเหลว: รูปแบบไฟล์ไม่ถูกต้อง' : 'Failed: Invalid file format');
+    reader.onload = (event) => {
+      try {
+        const text = event.target?.result as string;
+        const parsed = JSON.parse(text);
+
+        // Validation check
+        if (!parsed || typeof parsed !== 'object') {
+          throw new Error('Invalid JSON structure');
+        }
+
+        const counts = {
+          ingredients: Array.isArray(parsed.ingredients) ? parsed.ingredients.length : 0,
+          recipes: Array.isArray(parsed.recipes) ? parsed.recipes.length : 0,
+          products: Array.isArray(parsed.products) ? parsed.products.length : 0,
+          orders: Array.isArray(parsed.orders) ? parsed.orders.length : 0,
+          members: Array.isArray(parsed.members) ? parsed.members.length : 0,
+          categories: Array.isArray(parsed.categories) ? parsed.categories.length : 0,
+          tables: Array.isArray(parsed.tables) ? parsed.tables.length : 0,
+        };
+
+        const totalItems = Object.values(counts).reduce((a, b) => a + b, 0);
+        if (totalItems === 0 && !parsed.settings) {
+          throw new Error(
+            language === 'th'
+              ? 'ไฟล์ไม่มีข้อมูลร้านอาหารที่ถูกต้อง (ไม่พบตารางข้อมูลใดๆ)'
+              : 'Invalid backup file: no database tables found'
+          );
+        }
+
+        setPendingImportData({
+          rawJson: text,
+          counts,
+          version: parsed.version || 1,
+          exportedAt: parsed.exportedAt,
+        });
+      } catch (err: unknown) {
+        const errorMsg = err instanceof Error ? err.message : 'โครงสร้างไฟล์เสียหาย';
+        alert(
+          language === 'th'
+            ? `❌ ไฟล์สำรองข้อมูลไม่ถูกต้อง:\n${errorMsg} ไม่สามารถนำเข้าได้ ข้อมูลเดิมจะไม่ได้รับผลกระทบ`
+            : `❌ Invalid backup file:\n${errorMsg}. Existing data untouched.`
+        );
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = '';
       }
     };
     reader.readAsText(file);
   };
 
-  const handleResetPresets = async () => {
-    const confirmed = window.confirm(
-      language === 'th'
-        ? 'ต้องการรีเซ็ตข้อมูลทั้งหมดกลับเป็นค่าเริ่มต้นมาตรฐานของร้าน Tony\'s Kitchen หรือไม่?'
-        : 'Reset all data back to Tony\'s Kitchen default presets?'
-    );
-    if (!confirmed) return;
-
-    await initializeDatabase(true);
-    window.location.reload();
+  const handleConfirmImport = async () => {
+    if (!pendingImportData) return;
+    try {
+      const ok = await importDatabaseFromJSON(pendingImportData.rawJson);
+      if (ok) {
+        showToast({
+          title: language === 'th' ? 'กู้คืนข้อมูลสำเร็จ' : 'Import Complete',
+          message: language === 'th' ? 'นำเข้าข้อมูลสำรองเข้าสู่ระบบเรียบร้อยแล้ว' : 'Data imported successfully',
+          type: 'success',
+        });
+        setPendingImportData(null);
+        await loadSettings();
+        onSettingsUpdated();
+      }
+    } catch {
+      showToast({ title: 'Error', message: 'Import failed', type: 'error' });
+    }
   };
 
-  // Add Delivery Platform
+  // Section 8.4: Export Bills CSV (date range, UTF-8 BOM for Thai Excel)
+  const handleExportBillsCSV = async () => {
+    try {
+      const allOrders = await dbGetAll<Order>('orders');
+      const inRange = allOrders.filter((o) => {
+        const d = (o.paidAt || o.createdAt || '').split('T')[0];
+        return d >= csvStartDate && d <= csvEndDate;
+      });
+
+      if (inRange.length === 0) {
+        showToast({
+          title: language === 'th' ? 'ไม่พบข้อมูล' : 'No Data',
+          message: language === 'th' ? 'ไม่มีบิลการขายในช่วงวันที่เลือก' : 'No bills found in selected date range',
+          type: 'info',
+        });
+        return;
+      }
+
+      const headers = [
+        'เลขที่บิล (Bill No)',
+        'วันที่ (Date)',
+        'เวลา (Time)',
+        'ประเภทออเดอร์ (Type)',
+        'โต๊ะ/คิว (Table/Queue)',
+        'ช่องทางชำระเงิน (Payment)',
+        'ยอดรวมอาหาร (Subtotal)',
+        'ส่วนลด (Discount)',
+        'Service Charge',
+        'ภาษีมูลค่าเพิ่ม VAT',
+        'ยอดสุทธิ (Total Amount)',
+        'ต้นทุนอาหารรวม (Cost)',
+        'กำไรขั้นต้น (Gross Profit)',
+        'สถานะ (Status)',
+      ];
+
+      const rows = inRange.map((o) => {
+        const dateObj = new Date(o.paidAt || o.createdAt);
+        const dateStr = dateObj.toLocaleDateString('th-TH');
+        const timeStr = dateObj.toLocaleTimeString('th-TH');
+        return [
+          o.orderNumber || o.id,
+          dateStr,
+          timeStr,
+          o.orderType,
+          o.tableName || o.queueNo || '-',
+          o.paymentMethod || o.platformId || '-',
+          o.subtotal || 0,
+          o.discountAmount || 0,
+          o.serviceChargeAmount || 0,
+          o.vatAmount || 0,
+          o.totalAmount || 0,
+          o.totalCost || 0,
+          o.grossProfit || 0,
+          o.status,
+        ];
+      });
+
+      const filename = `tonys-kitchen-bills-${csvStartDate}-to-${csvEndDate}.csv`;
+      exportToCSV(filename, headers, rows);
+      showToast({
+        title: language === 'th' ? 'ส่งออก CSV สำเร็จ' : 'CSV Exported',
+        message: `ดาวน์โหลด ${filename} (พร้อม UTF-8 BOM เปิดใน Excel ภาษาไทยได้ทันที)`,
+        type: 'success',
+      });
+    } catch {
+      showToast({ title: 'Error', message: 'Failed to export CSV', type: 'error' });
+    }
+  };
+
+  // Section 8.4: Load Sample Data
+  const handleLoadSampleData = async () => {
+    const ok = window.confirm(
+      language === 'th'
+        ? 'ต้องการโหลดข้อมูลตัวอย่างสำหรับร้านอาหารไทย (วัตถุดิบ 12 รายการ, สูตรอาหาร, เมนู POS, ผังโต๊ะ 8 โต๊ะ, สมาชิก และบิลย้อนหลัง 30 รายการ) หรือไม่? \n(ข้อมูลปัจจุบันจะถูกรีเซ็ต)'
+        : 'Load authentic Thai bistro sample data? (Existing data will be reset)'
+    );
+    if (!ok) return;
+
+    await initializeDatabase(true);
+    await loadSettings();
+    showToast({
+      title: language === 'th' ? 'โหลดตัวอย่างสำเร็จ' : 'Sample Data Loaded',
+      message: language === 'th' ? 'พร้อมใช้งานข้อมูลจำลองในทุกโมดูล' : 'Sample bistro data loaded successfully',
+      type: 'success',
+    });
+    onSettingsUpdated();
+    onClose();
+  };
+
+  // Section 8.4: Clear All Data (2-Step confirmation)
+  const handleExecuteClearAll = async () => {
+    if (clearConfirmText !== 'DELETE') {
+      alert(language === 'th' ? 'กรุณาพิมพ์คำว่า "DELETE" ให้ถูกต้องเพื่อยืนยัน' : 'Please type "DELETE" to confirm');
+      return;
+    }
+
+    try {
+      const stores = [
+        'ingredients',
+        'recipes',
+        'categories',
+        'products',
+        'tables',
+        'orders',
+        'shifts',
+        'members',
+        'promotions',
+        'expenses',
+      ] as const;
+
+      for (const st of stores) {
+        await dbClear(st);
+      }
+
+      setIsClearAllModalOpen(false);
+      setClearConfirmText('');
+      showToast({
+        title: language === 'th' ? 'ล้างข้อมูลสำเร็จ' : 'All Data Cleared',
+        message: language === 'th' ? 'ล้างฐานข้อมูลทั้งหมดเรียบร้อย' : 'Database completely cleared',
+        type: 'info',
+      });
+      onSettingsUpdated();
+      onClose();
+    } catch {
+      showToast({ title: 'Error', message: 'Failed to clear data', type: 'error' });
+    }
+  };
+
+  // Category Add/Delete
+  const handleAddCategory = () => {
+    if (!settings || !newCategoryValue.trim()) return;
+    const val = newCategoryValue.trim();
+    if (newCategoryType === 'ingredient') {
+      const cur = settings.ingredientCategories || [];
+      if (!cur.includes(val)) {
+        setSettings({ ...settings, ingredientCategories: [...cur, val] });
+      }
+    } else if (newCategoryType === 'recipe') {
+      const cur = settings.recipeCategories || [];
+      if (!cur.includes(val)) {
+        setSettings({ ...settings, recipeCategories: [...cur, val] });
+      }
+    } else {
+      const cur = settings.expenseCategories || [];
+      if (!cur.includes(val)) {
+        setSettings({ ...settings, expenseCategories: [...cur, val] });
+      }
+    }
+    setNewCategoryValue('');
+  };
+
+  const handleDeleteCategory = (type: 'ingredient' | 'recipe' | 'expense', name: string) => {
+    if (!settings) return;
+    if (type === 'ingredient') {
+      setSettings({
+        ...settings,
+        ingredientCategories: (settings.ingredientCategories || []).filter((c) => c !== name),
+      });
+    } else if (type === 'recipe') {
+      setSettings({
+        ...settings,
+        recipeCategories: (settings.recipeCategories || []).filter((c) => c !== name),
+      });
+    } else {
+      setSettings({
+        ...settings,
+        expenseCategories: (settings.expenseCategories || []).filter((c) => c !== name),
+      });
+    }
+  };
+
+  // Delivery Platform Add/Delete
   const handleAddPlatform = () => {
-    if (!newPlatformName.trim() || !settings) return;
-    const newP: PlatformConfig = {
-      id: newPlatformName.trim().toLowerCase().replace(/\s+/g, '_') + '_' + Date.now(),
+    if (!settings || !newPlatformName.trim()) return;
+    const newPlat: PlatformConfig = {
+      id: `plat_${Date.now()}`,
       name: newPlatformName.trim(),
-      gpPercent: Number(newPlatformGP) || 30,
+      gpPercent: Number(newPlatformGP) || 0,
       gpHasVat: newPlatformHasVat,
     };
     setSettings({
       ...settings,
-      platforms: [...(settings.platforms || []), newP],
+      platforms: [...(settings.platforms || []), newPlat],
     });
     setNewPlatformName('');
     setNewPlatformGP(30);
@@ -264,73 +549,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
   };
 
-  // Add Category
-  const handleAddCategory = () => {
-    if (!newCategoryValue.trim() || !settings) return;
-    const val = newCategoryValue.trim();
-
-    if (newCategoryType === 'ingredient') {
-      const list = settings.ingredientCategories || [];
-      if (!list.includes(val)) {
-        setSettings({ ...settings, ingredientCategories: [...list, val] });
-      }
-    } else if (newCategoryType === 'recipe') {
-      const list = settings.recipeCategories || [];
-      if (!list.includes(val)) {
-        setSettings({ ...settings, recipeCategories: [...list, val] });
-      }
-    } else {
-      const list = settings.expenseCategories || [];
-      if (!list.includes(val)) {
-        setSettings({ ...settings, expenseCategories: [...list, val] });
-      }
-    }
-    setNewCategoryValue('');
-  };
-
-  const handleDeleteCategory = (type: 'ingredient' | 'recipe' | 'expense', cat: string) => {
-    if (!settings) return;
-    if (type === 'ingredient') {
-      setSettings({
-        ...settings,
-        ingredientCategories: (settings.ingredientCategories || []).filter((c) => c !== cat),
-      });
-    } else if (type === 'recipe') {
-      setSettings({
-        ...settings,
-        recipeCategories: (settings.recipeCategories || []).filter((c) => c !== cat),
-      });
-    } else {
-      setSettings({
-        ...settings,
-        expenseCategories: (settings.expenseCategories || []).filter((c) => c !== cat),
-      });
-    }
-  };
-
-  const handleRenameCategory = (type: 'ingredient' | 'recipe' | 'expense', oldName: string) => {
-    if (!settings) return;
-    const newName = prompt(`เปลี่ยนชื่อหมวดหมู่ "${oldName}" เป็น:`, oldName);
-    if (!newName || !newName.trim() || newName.trim() === oldName) return;
-    const trimmed = newName.trim();
-
-    if (type === 'ingredient') {
-      const list = (settings.ingredientCategories || []).map((c) => (c === oldName ? trimmed : c));
-      setSettings({ ...settings, ingredientCategories: list });
-    } else if (type === 'recipe') {
-      const list = (settings.recipeCategories || []).map((c) => (c === oldName ? trimmed : c));
-      setSettings({ ...settings, recipeCategories: list });
-    } else {
-      const list = (settings.expenseCategories || []).map((c) => (c === oldName ? trimmed : c));
-      setSettings({ ...settings, expenseCategories: list });
-    }
-  };
-
-  // Add Printer Station
+  // Printer Station Add/Delete
   const handleAddPrinterStation = () => {
-    if (!newStationName.trim() || !settings) return;
+    if (!settings || !newStationName.trim()) return;
     const newSt: PrinterStation = {
-      id: `station_${Date.now()}`,
+      id: `st_${Date.now()}`,
       name: newStationName.trim(),
       paperWidthMm: newStationWidth,
     };
@@ -349,146 +572,182 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
   };
 
+  // Payment Method Add/Toggle
+  const handleTogglePaymentMethod = (id: string) => {
+    if (!settings) return;
+    setSettings({
+      ...settings,
+      paymentMethods: (settings.paymentMethods || []).map((pm) =>
+        pm.id === id ? { ...pm, enabled: !pm.enabled } : pm
+      ),
+    });
+  };
+
+  const handleAddPaymentMethod = () => {
+    if (!settings || !newPaymentMethodName.trim()) return;
+    const newPm: PaymentMethodConfig = {
+      id: `pm_${Date.now()}`,
+      type: 'wallet',
+      name: newPaymentMethodName.trim(),
+      enabled: true,
+    };
+    setSettings({
+      ...settings,
+      paymentMethods: [...(settings.paymentMethods || []), newPm],
+    });
+    setNewPaymentMethodName('');
+  };
+
   if (!isOpen || !settings) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-fade-in">
-      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden text-[#E5E7EB]">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800 bg-neutral-950/70">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/50 backdrop-blur-xs animate-fade-in select-none">
+      <div className="bg-[#FFFFFF] border border-[#FED7AA] rounded-3xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+        {/* Modal Top Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#FED7AA] bg-[#FFF8EE]">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center text-orange-500">
-              <Sliders className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl bg-[#FFF3E0] border border-[#FED7AA] flex items-center justify-center text-[#EA580C]">
+              <Sliders className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white tracking-tight">
-                {t.settingsTitle || 'การตั้งค่าระบบ & สำรองข้อมูล'}
+              <h2 className="text-lg font-extrabold text-[#111827]">
+                {language === 'th' ? 'การตั้งค่า & สำรองข้อมูล (Settings & Backup)' : 'Settings & Backup'}
               </h2>
-              <p className="text-xs text-neutral-400">
-                ข้อมูลร้านค้า, ต้นทุนอาหาร, แพลตฟอร์ม GP, ภาษี, ใบเสร็จ และสำรองข้อมูล
+              <p className="text-xs text-[#6B7280]">
+                {language === 'th'
+                  ? 'ข้อมูลร้านค้า, ต้นทุน, ภาษี, พร้อมเพย์, เครื่องพิมพ์, และการสำรองข้อมูล'
+                  : 'Shop profile, food cost defaults, tax, promptpay, printers, and backup'}
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition"
+            className="p-1.5 text-[#6B7280] hover:text-[#111827] rounded-lg hover:bg-neutral-100 transition cursor-pointer"
           >
-            <X className="w-5 h-5" />
+            <X className="w-6 h-6" />
           </button>
         </div>
 
-        {/* Tab Navigation (Section 8.4) */}
-        <div className="flex border-b border-neutral-800 px-6 bg-neutral-950/40 overflow-x-auto text-xs font-semibold gap-1">
+        {/* Horizontal Navigation Tabs (Section 3A Warm Light Theme) */}
+        <div className="flex items-center gap-1 px-4 pt-2 border-b border-[#FED7AA] bg-[#FFFBF5] overflow-x-auto no-scrollbar">
           {[
-            { id: 'store', label: 'ข้อมูลร้านค้า', icon: Store },
-            { id: 'foodcost_platforms', label: 'ต้นทุน & เดลิเวอรี', icon: Truck },
-            { id: 'tax_service', label: 'VAT & เซอร์วิสชาร์จ', icon: Percent },
-            { id: 'promptpay', label: 'พร้อมเพย์ QR', icon: QrIcon },
-            { id: 'receipt_printers', label: 'ใบเสร็จ & เครื่องพิมพ์', icon: Receipt },
-            { id: 'categories_loyalty', label: 'หมวดหมู่ & สมาชิก', icon: Tag },
-            { id: 'backup', label: 'สำรอง & กู้คืน', icon: Database },
+            { id: 'store', label: language === 'th' ? 'ข้อมูลร้านค้า' : 'Shop Info', icon: Store },
+            { id: 'tax_service', label: language === 'th' ? 'ภาษี & บริการ' : 'Tax & Service', icon: Percent },
+            { id: 'foodcost_platforms', label: language === 'th' ? 'ต้นทุน & เดลิเวอรี' : 'Cost & Delivery', icon: Truck },
+            { id: 'receipt_printers', label: language === 'th' ? 'ใบเสร็จ & ครัว' : 'Receipt & Printer', icon: Receipt },
+            { id: 'promptpay', label: language === 'th' ? 'พร้อมเพย์ QR' : 'PromptPay QR', icon: QrIcon },
+            { id: 'payment_methods', label: language === 'th' ? 'การชำระเงิน' : 'Payment Methods', icon: DollarSign },
+            { id: 'categories_loyalty', label: language === 'th' ? 'หมวดหมู่ & สมาชิก' : 'Categories & CRM', icon: Tag },
+            { id: 'backup', label: language === 'th' ? 'สำรองข้อมูล & รีเซ็ต' : 'Backup & Storage', icon: Database },
           ].map((tab) => {
             const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
             return (
               <button
                 key={tab.id}
+                type="button"
                 onClick={() => setActiveTab(tab.id as SettingsTab)}
-                className={`flex items-center gap-2 py-3 px-3.5 border-b-2 transition whitespace-nowrap ${
-                  activeTab === tab.id
-                    ? 'border-orange-500 text-orange-400 font-bold'
-                    : 'border-transparent text-neutral-400 hover:text-white'
+                className={`flex items-center gap-2 px-3.5 py-2.5 rounded-t-xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${
+                  isActive
+                    ? 'bg-[#FFFFFF] border-t-2 border-t-[#EA580C] text-[#EA580C] shadow-2xs'
+                    : 'text-[#6B7280] hover:text-[#111827] hover:bg-[#FFF8EE]'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" />
+                <Icon className="w-4 h-4" />
                 <span>{tab.label}</span>
               </button>
             );
           })}
         </div>
 
-        {/* Content Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* TAB 1: STORE PROFILE & LANGUAGE */}
+        {/* Tab Content Body (Scrollable) */}
+        <div className="flex-1 overflow-y-auto p-5 sm:p-6 bg-[#FFFFFF] space-y-6">
+          {/* TAB 1: STORE / SHOP INFO */}
           {activeTab === 'store' && (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                    ชื่อร้านอาหาร (ภาษาไทย)
+                  <label className="block text-xs font-bold text-[#374151] mb-1">
+                    {language === 'th' ? 'ชื่อร้านค้า (ภาษาไทย) *' : 'Restaurant Name (TH) *'}
                   </label>
                   <input
                     type="text"
                     value={settings.restaurantNameTh}
                     onChange={(e) => setSettings({ ...settings, restaurantNameTh: e.target.value })}
-                    className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded-xl text-white focus:outline-none focus:border-orange-500"
+                    className="w-full h-[44px] px-3 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-[#111827] text-sm font-semibold focus:ring-2 focus:ring-[#F97316]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                    ชื่อร้านอาหาร (English)
+                  <label className="block text-xs font-bold text-[#374151] mb-1">
+                    {language === 'th' ? 'ชื่อร้านค้า (ภาษาอังกฤษ)' : 'Restaurant Name (EN)'}
                   </label>
                   <input
                     type="text"
                     value={settings.restaurantNameEn}
                     onChange={(e) => setSettings({ ...settings, restaurantNameEn: e.target.value })}
-                    className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded-xl text-white focus:outline-none focus:border-orange-500"
+                    className="w-full h-[44px] px-3 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-[#111827] text-sm font-semibold focus:ring-2 focus:ring-[#F97316]"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  สโลแกนร้าน / คำโปรย
+                <label className="block text-xs font-bold text-[#374151] mb-1">
+                  {language === 'th' ? 'สโลแกน / คำอธิบายร้าน' : 'Tagline'}
                 </label>
                 <input
                   type="text"
                   value={settings.tagline}
                   onChange={(e) => setSettings({ ...settings, tagline: e.target.value })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded-xl text-white focus:outline-none focus:border-orange-500"
+                  className="w-full h-[44px] px-3 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-[#111827] text-sm focus:ring-2 focus:ring-[#F97316]"
                 />
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                    เบอร์โทรศัพท์ติดต่อ
+                  <label className="block text-xs font-bold text-[#374151] mb-1">
+                    {language === 'th' ? 'เบอร์โทรศัพท์ร้าน' : 'Phone'}
                   </label>
                   <input
                     type="text"
                     value={settings.phone}
                     onChange={(e) => setSettings({ ...settings, phone: e.target.value })}
-                    className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded-xl text-white focus:outline-none focus:border-orange-500 font-mono"
+                    className="w-full h-[44px] px-3 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-[#111827] font-mono text-sm focus:ring-2 focus:ring-[#F97316]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                    เลขประจำตัวผู้เสียภาษี (Tax ID 13 หลัก)
+                  <label className="block text-xs font-bold text-[#374151] mb-1">
+                    {language === 'th' ? 'เลขประจำตัวผู้เสียภาษี (Tax ID 13 หลัก)' : 'Tax ID'}
                   </label>
                   <input
                     type="text"
                     value={settings.taxId}
                     onChange={(e) => setSettings({ ...settings, taxId: e.target.value })}
-                    className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded-xl text-white focus:outline-none focus:border-orange-500 font-mono"
+                    className="w-full h-[44px] px-3 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-[#111827] font-mono text-sm focus:ring-2 focus:ring-[#F97316]"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  ที่อยู่ร้านค้า (สำหรับหัวใบเสร็จ)
+                <label className="block text-xs font-bold text-[#374151] mb-1">
+                  {language === 'th' ? 'ที่อยู่ร้านค้า (แสดงบนหัวใบเสร็จ)' : 'Address for Receipt'}
                 </label>
                 <textarea
                   rows={2}
                   value={settings.addressTh}
                   onChange={(e) => setSettings({ ...settings, addressTh: e.target.value })}
-                  className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded-xl text-white focus:outline-none focus:border-orange-500 resize-none"
+                  className="w-full p-3 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-[#111827] text-sm focus:ring-2 focus:ring-[#F97316]"
                 />
               </div>
 
-              <div className="pt-3 border-t border-neutral-800 flex items-center justify-between">
+              <div className="pt-3 border-t border-[#FED7AA] flex items-center justify-between">
                 <div>
-                  <div className="text-xs font-semibold text-white">ภาษาหลักของระบบ (Language)</div>
-                  <div className="text-[11px] text-neutral-400">เลือกภาษาแสดงผลของเมนูและหน้าจอ</div>
+                  <div className="text-sm font-bold text-[#111827]">
+                    {language === 'th' ? 'ภาษาของระบบ (Language)' : 'Language'}
+                  </div>
+                  <div className="text-xs text-[#6B7280]">
+                    เลือกภาษาแสดงผลภาษาไทย หรือ English
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -497,10 +756,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       setSettings({ ...settings, language: 'th' });
                       setLanguage('th');
                     }}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
                       settings.language === 'th'
-                        ? 'bg-orange-500 text-neutral-950'
-                        : 'bg-neutral-800 text-neutral-400'
+                        ? 'bg-[#EA580C] text-white shadow-xs'
+                        : 'bg-[#FFF8EE] border border-[#FED7AA] text-[#6B7280]'
                     }`}
                   >
                     ภาษาไทย
@@ -511,10 +770,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       setSettings({ ...settings, language: 'en' });
                       setLanguage('en');
                     }}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
                       settings.language === 'en'
-                        ? 'bg-orange-500 text-neutral-950'
-                        : 'bg-neutral-800 text-neutral-400'
+                        ? 'bg-[#EA580C] text-white shadow-xs'
+                        : 'bg-[#FFF8EE] border border-[#FED7AA] text-[#6B7280]'
                     }`}
                   >
                     English
@@ -522,13 +781,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center justify-between pt-2 border-t border-neutral-800">
+              <div className="pt-3 border-t border-[#FED7AA] flex items-center justify-between">
                 <div>
-                  <div className="text-xs font-semibold text-white">
+                  <div className="text-sm font-bold text-[#111827]">
                     {language === 'th' ? 'ปีพุทธศักราช (พ.ศ.)' : 'Buddhist Era Year (B.E.)'}
                   </div>
-                  <div className="text-[11px] text-neutral-400">
-                    {language === 'th' ? 'แสดงปี พ.ศ. (+543) ในเอกสารและรายงานเมื่อใช้ภาษาไทย' : 'Display Buddhist year (+543) when Thai language is active'}
+                  <div className="text-xs text-[#6B7280]">
+                    แสดงปี พ.ศ. (+543) ในเอกสาร ใบเสร็จ และรายงานสรุป
                   </div>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
@@ -538,248 +797,59 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     onChange={(e) => setUseBuddhistYear(e.target.checked)}
                     className="sr-only peer"
                   />
-                  <div className="w-11 h-6 bg-neutral-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
+                  <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#EA580C]"></div>
                 </label>
               </div>
 
-              {/* Text Size Setting */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between pt-2 border-t border-neutral-800 gap-2">
+              <div className="pt-3 border-t border-[#FED7AA] flex items-center justify-between">
                 <div>
-                  <div className="text-xs font-semibold text-white">
-                    {language === 'th' ? 'ขนาดตัวอักษร (Text Size)' : 'Text Size'}
+                  <div className="text-sm font-bold text-[#111827]">
+                    {language === 'th' ? 'ขนาดตัวอักษรทั้งระบบ (Text Size)' : 'Text Size'}
                   </div>
-                  <div className="text-[11px] text-neutral-400">
-                    {language === 'th'
-                      ? 'ปรับขนาดฟอนต์ของทั้งระบบเพื่อความชัดเจนบนหน้าจอแท็บเล็ต'
-                      : 'Scale app-wide typography for maximum tablet legibility'}
+                  <div className="text-xs text-[#6B7280]">
+                    ปรับขนาดตัวอักษรเพื่อความคมชัดบนแท็บเล็ตและจอขาย
                   </div>
                 </div>
                 <div className="flex gap-1.5">
                   {(
                     [
-                      { id: 'normal', th: 'ปกติ (100%)', en: 'Normal (100%)' },
-                      { id: 'large', th: 'ใหญ่ (115%)', en: 'Large (115%)' },
-                      { id: 'xlarge', th: 'ใหญ่มาก (130%)', en: 'Extra Large (130%)' },
+                      { id: 'normal', th: 'ปกติ (100%)', en: 'Normal' },
+                      { id: 'large', th: 'ใหญ่ (115%)', en: 'Large' },
+                      { id: 'xlarge', th: 'ใหญ่มาก (130%)', en: 'XL' },
                     ] as const
-                  ).map((sizeOpt) => {
-                    const isSelected = (settings.textSize || 'large') === sizeOpt.id;
-                    return (
-                      <button
-                        key={sizeOpt.id}
-                        type="button"
-                        onClick={() => {
-                          const updated = { ...settings, textSize: sizeOpt.id };
-                          setSettings(updated);
-                          document.documentElement.classList.remove('text-size-normal', 'text-size-large', 'text-size-xlarge');
-                          document.documentElement.classList.add(`text-size-${sizeOpt.id}`);
-                        }}
-                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition ${
-                          isSelected
-                            ? 'bg-orange-500 text-neutral-950 shadow-xs'
-                            : 'bg-neutral-800 text-neutral-400 hover:text-white'
-                        }`}
-                      >
-                        {language === 'th' ? sizeOpt.th : sizeOpt.en}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: FOOD COST, OVERHEAD & DELIVERY PLATFORMS */}
-          {activeTab === 'foodcost_platforms' && (
-            <div className="space-y-6">
-              {/* Cost Defaults */}
-              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-4">
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Percent className="w-4 h-4 text-orange-400" />
-                  <span>ค่ามาตรฐานการคำนวณต้นทุนอาหาร (Food Cost Standards)</span>
-                </h3>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                  <div>
-                    <label className="block text-neutral-300 font-semibold mb-1">
-                      เป้าหมายต้นทุนอาหารเริ่มต้น (%)
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="100"
-                      value={settings.defaultTargetFoodCostPercent || 30}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          defaultTargetFoodCostPercent: Number(e.target.value) || 30,
-                        })
-                      }
-                      className="w-full px-3 py-2 bg-neutral-900 border border-neutral-800 rounded-xl text-white font-mono font-bold"
-                    />
-                    <p className="text-[10px] text-neutral-500 mt-1">ค่ามาตรฐานทั่วไปคือ 30%</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-neutral-300 font-semibold mb-1">
-                      ค่าโสหุ้ยร้านเริ่มต้น (%)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={settings.defaultOverheadPercent || 0}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          defaultOverheadPercent: Number(e.target.value) || 0,
-                        })
-                      }
-                      className="w-full px-3 py-2 bg-neutral-900 border border-neutral-800 rounded-xl text-white font-mono font-bold"
-                    />
-                    <p className="text-[10px] text-neutral-500 mt-1">ค่าน้ำมัน แก๊ส สิ้นเปลืองแฝง</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-neutral-300 font-semibold mb-1">
-                      การปัดเศษราคาขายที่แนะนำ
-                    </label>
-                    <select
-                      value={settings.priceRounding || 1}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          priceRounding: Number(e.target.value) as any,
-                        })
-                      }
-                      className="w-full px-3 py-2 bg-neutral-900 border border-neutral-800 rounded-xl text-white font-mono font-bold"
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        const updated = { ...settings, textSize: opt.id };
+                        setSettings(updated);
+                        document.documentElement.classList.remove('text-size-normal', 'text-size-large', 'text-size-xlarge');
+                        document.documentElement.classList.add(`text-size-${opt.id}`);
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                        (settings.textSize || 'large') === opt.id
+                          ? 'bg-[#EA580C] text-white shadow-xs'
+                          : 'bg-[#FFF8EE] border border-[#FED7AA] text-[#6B7280]'
+                      }`}
                     >
-                      <option value={1}>ปัดขึ้นเป็นจำนวนเต็ม 1 บาท (เช่น 89.-)</option>
-                      <option value={5}>ปัดขึ้นเป็นเลข 5 บาท (เช่น 85.-, 90.-)</option>
-                      <option value={10}>ปัดขึ้นเป็นเลข 10 บาท (เช่น 90.-, 100.-)</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Delivery Platforms Management (Section 8.4) */}
-              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      <Truck className="w-4 h-4 text-emerald-400" />
-                      <span>จัดการแพลตฟอร์มเดลิเวอรี (GP & ภาษี GP)</span>
-                    </h3>
-                    <p className="text-xs text-neutral-400">
-                      ตั้งค่าส่วนแบ่งเปอร์เซ็นต์ GP และ VAT ของ GP เพื่อคำนวณราคาขายและงบกำไรขาดทุนอย่างถูกต้อง
-                    </p>
-                  </div>
-                </div>
-
-                {/* Platform Table */}
-                <div className="border border-neutral-800 rounded-xl overflow-hidden">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-neutral-900 border-b border-neutral-800 text-neutral-400">
-                      <tr>
-                        <th className="py-2.5 px-3">ชื่อแพลตฟอร์ม</th>
-                        <th className="py-2.5 px-3 text-right">ส่วนแบ่ง GP (%)</th>
-                        <th className="py-2.5 px-3 text-center">VAT ใน GP (x1.07)</th>
-                        <th className="py-2.5 px-3 text-right">GP สุทธิ</th>
-                        <th className="py-2.5 px-3 text-right">ลบ</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-800/60 font-mono">
-                      {(settings.platforms || []).map((p) => {
-                        const effective = p.gpHasVat ? p.gpPercent * 1.07 : p.gpPercent;
-                        return (
-                          <tr key={p.id} className="hover:bg-neutral-900/40">
-                            <td className="py-2 px-3 font-sans font-bold text-white">{p.name}</td>
-                            <td className="py-2 px-3 text-right font-bold text-orange-400">
-                              {p.gpPercent}%
-                            </td>
-                            <td className="py-2 px-3 text-center font-sans">
-                              {p.gpHasVat ? (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300">
-                                  มี VAT (+7%)
-                                </span>
-                              ) : (
-                                <span className="text-neutral-500 text-[10px]">ไม่มี</span>
-                              )}
-                            </td>
-                            <td className="py-2 px-3 text-right font-bold text-emerald-400">
-                              {effective.toFixed(2)}%
-                            </td>
-                            <td className="py-2 px-3 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleDeletePlatform(p.id)}
-                                className="p-1 text-neutral-500 hover:text-rose-400 transition"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Add Platform Row */}
-                <div className="flex flex-wrap items-center gap-2 pt-2 text-xs">
-                  <input
-                    type="text"
-                    placeholder="ชื่อแพลตฟอร์ม เช่น ShopeeFood"
-                    value={newPlatformName}
-                    onChange={(e) => setNewPlatformName(e.target.value)}
-                    className="flex-1 min-w-[140px] px-3 py-1.5 bg-neutral-900 border border-neutral-800 rounded-lg text-white"
-                  />
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-neutral-400">GP:</span>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={newPlatformGP}
-                      onChange={(e) => setNewPlatformGP(Number(e.target.value) || 0)}
-                      className="w-16 px-2 py-1.5 bg-neutral-900 border border-neutral-800 rounded-lg text-white font-mono text-center"
-                    />
-                    <span className="text-neutral-400">%</span>
-                  </div>
-                  <label className="flex items-center gap-1.5 text-neutral-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newPlatformHasVat}
-                      onChange={(e) => setNewPlatformHasVat(e.target.checked)}
-                      className="accent-orange-500"
-                    />
-                    <span>GP มี VAT</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={handleAddPlatform}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg flex items-center gap-1 transition"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>เพิ่ม</span>
-                  </button>
+                      {language === 'th' ? opt.th : opt.en}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB 3: TAX & SERVICE CHARGE */}
+          {/* TAB 2: TAX & SERVICE CHARGE */}
           {activeTab === 'tax_service' && (
             <div className="space-y-5">
-              {/* VAT Setting */}
-              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-3">
+              {/* VAT Settings */}
+              <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">
-                      ระบบภาษีมูลค่าเพิ่ม (VAT 7%)
-                    </h3>
-                    <p className="text-xs text-neutral-400">
-                      คำนวณและแสดงภาษีในบิลขายหน้าร้านและใบเสร็จ
-                    </p>
+                  <div className="flex items-center gap-2">
+                    <Percent className="w-5 h-5 text-[#EA580C]" />
+                    <span className="font-bold text-sm text-[#111827]">ภาษีมูลค่าเพิ่ม (VAT)</span>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
@@ -788,299 +858,310 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       onChange={(e) => setSettings({ ...settings, vatEnabled: e.target.checked })}
                       className="sr-only peer"
                     />
-                    <div className="w-11 h-6 bg-neutral-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
+                    <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#EA580C]"></div>
                   </label>
                 </div>
 
                 {settings.vatEnabled && (
-                  <div className="pt-3 border-t border-neutral-800 space-y-3">
-                    <div className="flex items-center gap-4 text-xs">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="vatMode"
-                          checked={settings.vatInclusive}
-                          onChange={() => setSettings({ ...settings, vatInclusive: true })}
-                          className="accent-orange-500"
-                        />
-                        <span className="text-neutral-200">
-                          ราคาสินค้ารวม VAT แล้ว (VAT Inclusive - ถอดภาษีออก)
-                        </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-[#FED7AA]">
+                    <div>
+                      <label className="block text-xs font-bold text-[#374151] mb-1">
+                        อัตราภาษี (%)
                       </label>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="vatMode"
-                          checked={!settings.vatInclusive}
-                          onChange={() => setSettings({ ...settings, vatInclusive: false })}
-                          className="accent-orange-500"
-                        />
-                        <span className="text-neutral-200">
-                          ราคาไม่รวม VAT (VAT Exclusive - บวกภาษีเพิ่มในบิล)
-                        </span>
-                      </label>
-                    </div>
-
-                    <div className="flex items-center gap-2 w-48 text-xs">
-                      <span className="text-neutral-400">อัตราภาษี:</span>
                       <input
                         type="number"
                         min="0"
-                        max="100"
+                        max="20"
                         value={settings.vatRate}
-                        onChange={(e) =>
-                          setSettings({ ...settings, vatRate: Number(e.target.value) || 0 })
-                        }
-                        className="w-16 px-2 py-1 bg-neutral-900 border border-neutral-700 rounded text-center text-white font-mono"
+                        onChange={(e) => setSettings({ ...settings, vatRate: Number(e.target.value) || 7 })}
+                        className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold font-mono"
                       />
-                      <span className="text-neutral-400">%</span>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-[#374151] mb-1">
+                        รูปแบบราคาขาย
+                      </label>
+                      <select
+                        value={settings.vatInclusive ? 'include' : 'exclude'}
+                        onChange={(e) => setSettings({ ...settings, vatInclusive: e.target.value === 'include' })}
+                        className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold"
+                      >
+                        <option value="include">VAT Include (ราคารวมภาษีแล้ว - สกัด VAT ออก)</option>
+                        <option value="exclude">VAT Exclude (ราคาไม่รวมภาษี - บวกเพิ่มตอนชำระเงิน)</option>
+                      </select>
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Service Charge Setting */}
-              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-3">
+              {/* Service Charge Settings */}
+              <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">
-                      ค่าบริการ (Service Charge)
-                    </h3>
-                    <p className="text-xs text-neutral-400">
-                      คิดค่าบริการเพิ่มสำหรับลูกค้าทานที่ร้าน (Dine-in)
-                    </p>
+                  <div className="flex items-center gap-2">
+                    <DollarSign className="w-5 h-5 text-[#EA580C]" />
+                    <span className="font-bold text-sm text-[#111827]">ค่าบริการ (Service Charge)</span>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
                       type="checkbox"
                       checked={settings.serviceChargeEnabled}
-                      onChange={(e) =>
-                        setSettings({ ...settings, serviceChargeEnabled: e.target.checked })
-                      }
+                      onChange={(e) => setSettings({ ...settings, serviceChargeEnabled: e.target.checked })}
                       className="sr-only peer"
                     />
-                    <div className="w-11 h-6 bg-neutral-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
+                    <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#EA580C]"></div>
                   </label>
                 </div>
 
                 {settings.serviceChargeEnabled && (
-                  <div className="pt-3 border-t border-neutral-800 space-y-3 text-xs">
-                    <div className="flex items-center gap-2 w-48">
-                      <span className="text-neutral-400">อัตราเซอร์วิสชาร์จ:</span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-[#FED7AA]">
+                    <div>
+                      <label className="block text-xs font-bold text-[#374151] mb-1">
+                        อัตราค่าบริการ (%)
+                      </label>
                       <input
                         type="number"
                         min="0"
-                        max="100"
+                        max="30"
                         value={settings.serviceChargeRate}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            serviceChargeRate: Number(e.target.value) || 0,
-                          })
-                        }
-                        className="w-16 px-2 py-1 bg-neutral-900 border border-neutral-700 rounded text-center text-white font-mono"
+                        onChange={(e) => setSettings({ ...settings, serviceChargeRate: Number(e.target.value) || 10 })}
+                        className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold font-mono"
                       />
-                      <span className="text-neutral-400">%</span>
                     </div>
-
-                    <label className="flex items-center gap-2 cursor-pointer text-neutral-300">
-                      <input
-                        type="checkbox"
-                        checked={settings.serviceChargeCountAsRevenue ?? false}
-                        onChange={(e) =>
-                          setSettings({
-                            ...settings,
-                            serviceChargeCountAsRevenue: e.target.checked,
-                          })
-                        }
-                        className="accent-orange-500"
-                      />
-                      <span>นับค่าบริการเป็นรายได้ร้านในงบกำไรขาดทุน (Count as revenue in P&L)</span>
-                    </label>
+                    <div>
+                      <label className="block text-xs font-bold text-[#374151] mb-1">
+                        นับเป็นรายได้ร้าน (Count as Revenue)
+                      </label>
+                      <select
+                        value={settings.serviceChargeCountAsRevenue ? 'true' : 'false'}
+                        onChange={(e) => setSettings({ ...settings, serviceChargeCountAsRevenue: e.target.value === 'true' })}
+                        className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold"
+                      >
+                        <option value="false">ไม่นับเป็นรายได้ (เป็นกองกลางทิปพนักงาน)</option>
+                        <option value="true">นับเป็นรายได้ร้าน (รวมคำนวณในกำไรสุทธิ)</option>
+                      </select>
+                    </div>
                   </div>
                 )}
               </div>
             </div>
           )}
 
-          {/* TAB 4: PROMPTPAY */}
-          {activeTab === 'promptpay' && (
-            <div className="space-y-4">
-              <div className="bg-orange-950/20 border border-orange-800/40 rounded-xl p-4 text-xs text-orange-200/90 leading-relaxed">
-                ระบบสร้าง QR Code พร้อมเพย์มาตรฐาน EMVCo แบบไดนามิกตามยอดของบิลอัตโนมัติ เพื่อให้ลูกค้าสแกนจ่ายผ่านแอปธนาคารไทยได้ทุกธนาคาร
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-                <div className="space-y-4">
+          {/* TAB 3: FOOD COST & DELIVERY PLATFORMS */}
+          {activeTab === 'foodcost_platforms' && (
+            <div className="space-y-5">
+              <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-4 space-y-3">
+                <h4 className="font-bold text-sm text-[#111827]">
+                  {language === 'th' ? 'ค่ามาตรฐานการคำนวณต้นทุน' : 'Food Cost Standards'}
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
-                    <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                      หมายเลขพร้อมเพย์ร้าน (PromptPay ID)
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
+                      เป้าหมาย Food Cost %
                     </label>
                     <input
-                      type="text"
-                      placeholder="0812345678 หรือ 0105562089123"
-                      value={settings.promptPayId}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setSettings({ ...settings, promptPayId: val });
-                        generateQRPreview(val);
-                      }}
-                      className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded-xl text-white focus:outline-none focus:border-orange-500 font-mono"
+                      type="number"
+                      min="10"
+                      max="80"
+                      value={settings.defaultTargetFoodCostPercent || 30}
+                      onChange={(e) => setSettings({ ...settings, defaultTargetFoodCostPercent: Number(e.target.value) || 30 })}
+                      className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold font-mono"
                     />
-                    <p className="text-[11px] text-neutral-500 mt-1">
-                      เบอร์มือถือ 10 หลัก หรือเลขบัตร ปชช./นิติบุคคล 13 หลัก
-                    </p>
                   </div>
-
                   <div>
-                    <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                      ชื่อบัญชีร้านที่แสดง
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
+                      ค่าโสหุ้ยร้าน (Overhead %)
                     </label>
                     <input
-                      type="text"
-                      value={settings.promptPayName}
-                      onChange={(e) => setSettings({ ...settings, promptPayName: e.target.value })}
-                      className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded-xl text-white focus:outline-none focus:border-orange-500"
+                      type="number"
+                      min="0"
+                      max="50"
+                      value={settings.defaultOverheadPercent || 0}
+                      onChange={(e) => setSettings({ ...settings, defaultOverheadPercent: Number(e.target.value) || 0 })}
+                      className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold font-mono"
                     />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
+                      การปัดเศษราคาขาย (฿)
+                    </label>
+                    <select
+                      value={settings.priceRounding || 1}
+                      onChange={(e) => setSettings({ ...settings, priceRounding: Number(e.target.value) as 1 | 5 | 10 })}
+                      className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold"
+                    >
+                      <option value={1}>ปัดขึ้นทีละ 1 บาท</option>
+                      <option value={5}>ปัดขึ้นทีละ 5 บาท (เช่น 125, 130)</option>
+                      <option value={10}>ปัดขึ้นทีละ 10 บาท (เช่น 120, 130)</option>
+                    </select>
                   </div>
                 </div>
+              </div>
 
-                {/* QR Code Preview */}
-                <div className="flex flex-col items-center justify-center p-4 bg-neutral-950 border border-neutral-800 rounded-xl">
-                  <div className="text-xs font-semibold text-neutral-400 mb-2">
-                    ตัวอย่าง QR Code พร้อมเพย์
+              {/* Delivery Platforms Management */}
+              <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-4 space-y-3">
+                <h4 className="font-bold text-sm text-[#111827]">
+                  {language === 'th' ? 'แพลตฟอร์มเดลิเวอรี & ส่วนแบ่ง GP' : 'Delivery Platforms'}
+                </h4>
+                <div className="space-y-2">
+                  {(settings.platforms || []).map((p) => (
+                    <div
+                      key={p.id}
+                      className="p-3 bg-white border border-[#FED7AA] rounded-xl flex items-center justify-between text-xs"
+                    >
+                      <div>
+                        <span className="font-bold text-sm text-[#111827]">{p.name}</span>
+                        <span className="ml-2 font-mono font-bold text-[#EA580C]">
+                          GP: {p.gpPercent}% {p.gpHasVat ? '(GP มี VAT 7%)' : ''}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePlatform(p.id)}
+                        className="p-1 text-[#DC2626] hover:bg-red-50 rounded-lg cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Add Platform Form */}
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 pt-2 border-t border-[#FED7AA]">
+                  <input
+                    type="text"
+                    placeholder="ชื่อแพลตฟอร์ม เช่น Robinhood"
+                    value={newPlatformName}
+                    onChange={(e) => setNewPlatformName(e.target.value)}
+                    className="sm:col-span-2 h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-xs font-semibold"
+                  />
+                  <div className="flex items-center gap-1.5 bg-white border border-[#FDBA74] rounded-xl px-2 h-[44px]">
+                    <span className="text-xs font-bold text-[#6B7280]">GP%</span>
+                    <input
+                      type="number"
+                      value={newPlatformGP}
+                      onChange={(e) => setNewPlatformGP(Number(e.target.value) || 0)}
+                      className="w-full text-xs font-bold font-mono focus:outline-none"
+                    />
                   </div>
-                  {promptPayQRDataUrl ? (
-                    <div className="bg-white p-3 rounded-lg shadow-md flex flex-col items-center">
-                      <img src={promptPayQRDataUrl} alt="PromptPay Preview" className="w-32 h-32" />
-                      <div className="text-neutral-900 font-bold text-xs mt-1">THB 100.00 (Test)</div>
-                    </div>
-                  ) : (
-                    <div className="w-32 h-32 bg-neutral-800/60 rounded-lg flex items-center justify-center text-xs text-neutral-500 text-center px-4">
-                      กรุณาระบุเลขพร้อมเพย์
-                    </div>
-                  )}
-                  <span className="text-[10px] text-emerald-400 mt-2 font-mono flex items-center gap-1">
-                    <Check className="w-3 h-3" /> EMVCo Compliant
-                  </span>
+                  <button
+                    type="button"
+                    onClick={handleAddPlatform}
+                    className="h-[44px] bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1 shadow-xs cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>เพิ่มแพลตฟอร์ม</span>
+                  </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB 5: RECEIPT & PRINTER STATIONS */}
+          {/* TAB 4: RECEIPT & PRINTERS */}
           {activeTab === 'receipt_printers' && (
-            <div className="space-y-6">
-              {/* Paper Width & Messages */}
-              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-4">
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Receipt className="w-4 h-4 text-orange-400" />
-                  <span>ขนาดกระดาษ & ข้อความใบเสร็จ</span>
-                </h3>
-
-                <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="space-y-5">
+              <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-4 space-y-3">
+                <h4 className="font-bold text-sm text-[#111827]">
+                  {language === 'th' ? 'การพิมพ์ใบเสร็จความร้อน' : 'Thermal Receipt'}
+                </h4>
+                <div className="grid grid-cols-2 gap-3">
                   <button
                     type="button"
                     onClick={() => setSettings({ ...settings, receiptWidth: '80mm' })}
-                    className={`p-3 rounded-xl border text-left flex items-start gap-3 transition ${
+                    className={`p-3 rounded-xl border text-left flex items-start gap-3 transition cursor-pointer ${
                       settings.receiptWidth === '80mm'
-                        ? 'border-orange-500 bg-orange-500/10 text-white'
-                        : 'border-neutral-800 bg-neutral-900 text-neutral-400'
+                        ? 'border-[#EA580C] bg-[#FFEDD5] text-[#9A3412] font-bold shadow-xs'
+                        : 'border-[#FED7AA] bg-white text-[#6B7280]'
                     }`}
                   >
-                    <Receipt className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
+                    <Receipt className="w-5 h-5 text-[#EA580C] shrink-0" />
                     <div>
-                      <div className="font-bold text-sm">80 มม. (80mm)</div>
-                      <div className="text-[11px] text-neutral-400">มาตรฐานเครื่องพิมพ์ความร้อนหน้าร้าน (Epson, Sunmi, Xprinter)</div>
+                      <div className="font-bold text-sm">80 มม. (Standard POS)</div>
+                      <div className="text-[11px] text-[#6B7280]">เครื่องพิมพ์สลิปตั้งโต๊ะมาตรฐาน</div>
                     </div>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setSettings({ ...settings, receiptWidth: '58mm' })}
-                    className={`p-3 rounded-xl border text-left flex items-start gap-3 transition ${
+                    className={`p-3 rounded-xl border text-left flex items-start gap-3 transition cursor-pointer ${
                       settings.receiptWidth === '58mm'
-                        ? 'border-orange-500 bg-orange-500/10 text-white'
-                        : 'border-neutral-800 bg-neutral-900 text-neutral-400'
+                        ? 'border-[#EA580C] bg-[#FFEDD5] text-[#9A3412] font-bold shadow-xs'
+                        : 'border-[#FED7AA] bg-white text-[#6B7280]'
                     }`}
                   >
-                    <Receipt className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
+                    <Receipt className="w-5 h-5 text-[#EA580C] shrink-0" />
                     <div>
-                      <div className="font-bold text-sm">58 มม. (58mm)</div>
-                      <div className="text-[11px] text-neutral-400">เครื่องพิมพ์พกพาไร้สายบลูทูธ ขนาดกะทัดรัด</div>
+                      <div className="font-bold text-sm">58 มม. (Compact Mobile)</div>
+                      <div className="text-[11px] text-[#6B7280]">เครื่องพิมพ์พกพาไร้สายบลูทูธ</div>
                     </div>
                   </button>
                 </div>
 
-                <div className="space-y-3">
+                <div className="space-y-3 pt-2">
                   <div>
-                    <label className="block text-xs font-semibold text-neutral-300 mb-1">
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
                       ข้อความหัวใบเสร็จ
                     </label>
                     <input
                       type="text"
                       value={settings.receiptHeaderMessage}
                       onChange={(e) => setSettings({ ...settings, receiptHeaderMessage: e.target.value })}
-                      className="w-full px-3 py-2 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white"
+                      className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-xs"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-neutral-300 mb-1">
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
                       ข้อความท้ายใบเสร็จ
                     </label>
                     <input
                       type="text"
                       value={settings.receiptFooterMessage}
                       onChange={(e) => setSettings({ ...settings, receiptFooterMessage: e.target.value })}
-                      className="w-full px-3 py-2 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white"
+                      className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-xs"
                     />
                   </div>
                 </div>
               </div>
 
-              {/* Printer Stations (Section 8.4) */}
-              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <Printer className="w-4 h-4 text-orange-400" />
-                    <span>จุดพิมพ์ใบออเดอร์ (Printer Stations)</span>
-                  </h3>
-                </div>
-
-                <div className="divide-y divide-neutral-800/80 border border-neutral-800 rounded-xl overflow-hidden">
-                  {(settings.printerStations || []).map((station) => (
+              {/* Printer Stations */}
+              <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-4 space-y-3">
+                <h4 className="font-bold text-sm text-[#111827]">
+                  {language === 'th' ? 'จุดพิมพ์ใบสั่งทำอาหาร (Printer Stations)' : 'Printer Stations'}
+                </h4>
+                <div className="space-y-2">
+                  {(settings.printerStations || []).map((st) => (
                     <div
-                      key={station.id}
-                      className="p-3 flex items-center justify-between text-xs bg-neutral-900/60"
+                      key={st.id}
+                      className="p-3 bg-white border border-[#FED7AA] rounded-xl flex items-center justify-between text-xs"
                     >
                       <div className="flex items-center gap-2">
-                        <Printer className="w-4 h-4 text-neutral-400" />
-                        <span className="font-bold text-white">{station.name}</span>
-                        <span className="text-neutral-500 font-mono">({station.paperWidthMm}mm)</span>
+                        <Printer className="w-4 h-4 text-[#EA580C]" />
+                        <span className="font-bold text-sm text-[#111827]">{st.name}</span>
+                        <span className="font-mono text-[#6B7280]">({st.paperWidthMm}mm)</span>
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleDeletePrinterStation(station.id)}
-                        className="text-neutral-500 hover:text-rose-400 p-1"
+                        onClick={() => handleDeletePrinterStation(st.id)}
+                        className="p-1 text-[#DC2626] hover:bg-red-50 rounded-lg cursor-pointer"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   ))}
                 </div>
 
-                <div className="flex items-center gap-2 text-xs">
+                <div className="flex items-center gap-2 pt-2 border-t border-[#FED7AA]">
                   <input
                     type="text"
                     placeholder="ชื่อจุดพิมพ์ เช่น ครัวของทอด"
                     value={newStationName}
                     onChange={(e) => setNewStationName(e.target.value)}
-                    className="flex-1 px-3 py-1.5 bg-neutral-900 border border-neutral-800 rounded-lg text-white"
+                    className="flex-1 h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-xs"
                   />
                   <select
                     value={newStationWidth}
                     onChange={(e) => setNewStationWidth(Number(e.target.value))}
-                    className="px-3 py-1.5 bg-neutral-900 border border-neutral-800 rounded-lg text-white font-mono"
+                    className="h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-xs font-mono font-bold"
                   >
                     <option value={80}>80 มม.</option>
                     <option value={58}>58 มม.</option>
@@ -1088,77 +1169,182 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <button
                     type="button"
                     onClick={handleAddPrinterStation}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg flex items-center gap-1"
+                    className="h-[44px] px-4 bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold rounded-xl text-xs flex items-center gap-1 shadow-xs cursor-pointer"
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>เพิ่ม</span>
+                    <Plus className="w-4 h-4" />
+                    <span>เพิ่มสเตชั่น</span>
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB 6: CATEGORIES & LOYALTY */}
-          {activeTab === 'categories_loyalty' && (
-            <div className="space-y-6">
-              {/* Category Management */}
-              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-4">
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Tag className="w-4 h-4 text-orange-400" />
-                  <span>จัดการหมวดหมู่ของระบบ (Categories Management)</span>
-                </h3>
+          {/* TAB 5: PROMPTPAY QR */}
+          {activeTab === 'promptpay' && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <div className="space-y-3.5">
+                  <div>
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
+                      หมายเลขพร้อมเพย์ (เบอร์โทร 10 หลัก หรือ เลขบัตร ปชช. 13 หลัก) *
+                    </label>
+                    <input
+                      type="text"
+                      value={settings.promptPayId}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/[^0-9]/g, '');
+                        setSettings({ ...settings, promptPayId: val });
+                        generateQRPreview(val);
+                      }}
+                      placeholder="0891234567 หรือ 0105562089123"
+                      className="w-full h-[46px] px-3.5 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] font-mono text-base font-bold focus:ring-2 focus:ring-[#F97316]"
+                    />
+                  </div>
 
-                <div className="flex items-center gap-2 text-xs">
+                  <div>
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
+                      ชื่อบัญชีพร้อมเพย์ (แสดงให้ลูกค้าตรวจสอบ)
+                    </label>
+                    <input
+                      type="text"
+                      value={settings.promptPayName}
+                      onChange={(e) => setSettings({ ...settings, promptPayName: e.target.value })}
+                      placeholder="ชื่อร้าน หรือ ชื่อเจ้าของบัญชี"
+                      className="w-full h-[44px] px-3.5 rounded-xl border border-[#FDBA74] bg-[#FFF8EE] text-sm focus:ring-2 focus:ring-[#F97316]"
+                    />
+                  </div>
+
+                  <div className="p-3 bg-[#FEF3C7] rounded-xl border border-[#FCD34D] text-xs text-[#92400E] leading-relaxed">
+                    💡 <strong>หมายเหตุ:</strong> ระบบจะคำนวณและสร้าง QR Code พร้อมเพย์ตามมาตรฐาน EMVCo พร้อมยอดเงินจริงของแต่ละบิลอัตโนมัติ และแคชเชียร์จะตรวจสอบสลิปการโอนเงินด้วยตนเองก่อนกดยืนยันชำระ
+                  </div>
+                </div>
+
+                {/* QR Preview Card */}
+                <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-5 flex flex-col items-center justify-center text-center shadow-xs">
+                  <div className="text-xs font-bold text-[#9A3412] mb-3">
+                    ตัวอย่าง Dynamic PromptPay QR (ยอด ฿100.00)
+                  </div>
+                  {promptPayQRDataUrl ? (
+                    <div className="bg-white p-3 rounded-2xl border border-[#FED7AA] shadow-sm">
+                      <img src={promptPayQRDataUrl} alt="PromptPay QR" className="w-44 h-44 object-contain" />
+                    </div>
+                  ) : (
+                    <div className="w-44 h-44 bg-white rounded-2xl border-2 border-dashed border-[#FED7AA] flex flex-col items-center justify-center text-[#6B7280] text-xs p-4">
+                      <QrIcon className="w-8 h-8 text-[#F97316] mb-1" />
+                      <span>กรุณากรอกเลขพร้อมเพย์เพื่อดูตัวอย่าง QR</span>
+                    </div>
+                  )}
+                  {settings.promptPayName && (
+                    <div className="text-xs font-bold text-[#111827] mt-2">
+                      {settings.promptPayName}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 6: PAYMENT METHODS */}
+          {activeTab === 'payment_methods' && (
+            <div className="space-y-4">
+              <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-4 space-y-3">
+                <h4 className="font-bold text-sm text-[#111827]">
+                  {language === 'th' ? 'ช่องทางการชำระเงินที่เปิดใช้งาน' : 'Enabled Payment Methods'}
+                </h4>
+                <div className="space-y-2">
+                  {(settings.paymentMethods || []).map((pm) => (
+                    <div
+                      key={pm.id}
+                      className="p-3 bg-white border border-[#FED7AA] rounded-xl flex items-center justify-between text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <DollarSign className="w-4 h-4 text-[#EA580C]" />
+                        <span className="font-bold text-sm text-[#111827]">{pm.name}</span>
+                        <span className="text-[#6B7280]">({pm.type})</span>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={pm.enabled}
+                          onChange={() => handleTogglePaymentMethod(pm.id)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#EA580C]"></div>
+                      </label>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Add Custom E-Wallet */}
+                <div className="flex items-center gap-2 pt-2 border-t border-[#FED7AA]">
+                  <input
+                    type="text"
+                    placeholder="เพิ่ม E-Wallet เช่น TrueMoney Wallet, Rabbit LINE Pay"
+                    value={newPaymentMethodName}
+                    onChange={(e) => setNewPaymentMethodName(e.target.value)}
+                    className="flex-1 h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-xs font-semibold"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddPaymentMethod}
+                    className="h-[44px] px-4 bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold rounded-xl text-xs flex items-center gap-1 shadow-xs cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>เพิ่มช่องทาง</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 7: CATEGORIES & LOYALTY */}
+          {activeTab === 'categories_loyalty' && (
+            <div className="space-y-5">
+              {/* Category Management */}
+              <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-4 space-y-3">
+                <h4 className="font-bold text-sm text-[#111827]">
+                  {language === 'th' ? 'จัดการหมวดหมู่ของระบบ' : 'Category Management'}
+                </h4>
+                <div className="flex items-center gap-2">
                   <select
                     value={newCategoryType}
                     onChange={(e) => setNewCategoryType(e.target.value as any)}
-                    className="px-3 py-1.5 bg-neutral-900 border border-neutral-800 rounded-lg text-white font-semibold"
+                    className="h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-xs font-bold"
                   >
-                    <option value="ingredient">หมวดวัตถุดิบ (Ingredient)</option>
-                    <option value="recipe">หมวดสูตร/เมนูขาย (Recipe)</option>
-                    <option value="expense">หมวดรายจ่าย (Expense)</option>
+                    <option value="ingredient">หมวดวัตถุดิบ</option>
+                    <option value="recipe">หมวดสูตร/เมนูขาย</option>
+                    <option value="expense">หมวดรายจ่าย</option>
                   </select>
                   <input
                     type="text"
                     placeholder="ชื่อหมวดหมู่ใหม่"
                     value={newCategoryValue}
                     onChange={(e) => setNewCategoryValue(e.target.value)}
-                    className="flex-1 px-3 py-1.5 bg-neutral-900 border border-neutral-800 rounded-lg text-white"
+                    className="flex-1 h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-xs"
                   />
                   <button
                     type="button"
                     onClick={handleAddCategory}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg flex items-center gap-1"
+                    className="h-[44px] px-4 bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold rounded-xl text-xs cursor-pointer shadow-xs"
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>เพิ่มหมวด</span>
+                    + เพิ่ม
                   </button>
                 </div>
 
-                {/* Display Current Categories */}
-                <div className="space-y-4 pt-2 text-xs">
+                <div className="space-y-3 pt-2 text-xs">
                   <div>
-                    <div className="font-bold text-[#374151] mb-1.5">หมวดวัตถุดิบ (Ingredient Categories):</div>
+                    <div className="font-bold text-[#374151] mb-1">หมวดวัตถุดิบ (Ingredient Categories):</div>
                     <div className="flex flex-wrap gap-1.5">
                       {(settings.ingredientCategories || []).map((c) => (
                         <span
                           key={c}
-                          className="px-2.5 py-1 bg-[#FFF8EE] border border-[#FED7AA] rounded-lg text-[#111827] font-medium flex items-center gap-1.5 shadow-2xs"
+                          className="px-2.5 py-1 bg-white border border-[#FED7AA] rounded-lg text-[#111827] font-semibold flex items-center gap-1 shadow-2xs"
                         >
                           <span>{c}</span>
                           <button
                             type="button"
-                            onClick={() => handleRenameCategory('ingredient', c)}
-                            className="p-0.5 text-[#F97316] hover:text-[#EA580C] hover:bg-[#FFEDD5] rounded transition cursor-pointer"
-                            title="เปลี่ยนชื่อหมวดหมู่นี้"
-                          >
-                            <Edit2 className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
                             onClick={() => handleDeleteCategory('ingredient', c)}
-                            className="p-0.5 text-[#DC2626] hover:text-[#991B1B] hover:bg-[#FEE2E2] rounded transition cursor-pointer font-bold text-sm leading-none"
-                            title="ลบหมวดหมู่นี้"
+                            className="text-red-500 hover:text-red-700 font-bold ml-1"
                           >
                             ×
                           </button>
@@ -1168,27 +1354,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   <div>
-                    <div className="font-bold text-[#374151] mb-1.5">หมวดสูตร/เมนู (Recipe Categories):</div>
+                    <div className="font-bold text-[#374151] mb-1">หมวดสูตรอาหาร (Recipe Categories):</div>
                     <div className="flex flex-wrap gap-1.5">
                       {(settings.recipeCategories || []).map((c) => (
                         <span
                           key={c}
-                          className="px-2.5 py-1 bg-[#FFF8EE] border border-[#FED7AA] rounded-lg text-[#111827] font-medium flex items-center gap-1.5 shadow-2xs"
+                          className="px-2.5 py-1 bg-white border border-[#FED7AA] rounded-lg text-[#111827] font-semibold flex items-center gap-1 shadow-2xs"
                         >
                           <span>{c}</span>
                           <button
                             type="button"
-                            onClick={() => handleRenameCategory('recipe', c)}
-                            className="p-0.5 text-[#F97316] hover:text-[#EA580C] hover:bg-[#FFEDD5] rounded transition cursor-pointer"
-                            title="เปลี่ยนชื่อหมวดหมู่นี้"
-                          >
-                            <Edit2 className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
                             onClick={() => handleDeleteCategory('recipe', c)}
-                            className="p-0.5 text-[#DC2626] hover:text-[#991B1B] hover:bg-[#FEE2E2] rounded transition cursor-pointer font-bold text-sm leading-none"
-                            title="ลบหมวดหมู่นี้"
+                            className="text-red-500 hover:text-red-700 font-bold ml-1"
                           >
                             ×
                           </button>
@@ -1198,27 +1375,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
 
                   <div>
-                    <div className="font-bold text-[#374151] mb-1.5">หมวดรายจ่าย (Expense Categories):</div>
+                    <div className="font-bold text-[#374151] mb-1">หมวดรายจ่าย (Expense Categories):</div>
                     <div className="flex flex-wrap gap-1.5">
                       {(settings.expenseCategories || []).map((c) => (
                         <span
                           key={c}
-                          className="px-2.5 py-1 bg-[#FFF8EE] border border-[#FED7AA] rounded-lg text-[#111827] font-medium flex items-center gap-1.5 shadow-2xs"
+                          className="px-2.5 py-1 bg-white border border-[#FED7AA] rounded-lg text-[#111827] font-semibold flex items-center gap-1 shadow-2xs"
                         >
                           <span>{c}</span>
                           <button
                             type="button"
-                            onClick={() => handleRenameCategory('expense', c)}
-                            className="p-0.5 text-[#F97316] hover:text-[#EA580C] hover:bg-[#FFEDD5] rounded transition cursor-pointer"
-                            title="เปลี่ยนชื่อหมวดหมู่นี้"
-                          >
-                            <Edit2 className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
                             onClick={() => handleDeleteCategory('expense', c)}
-                            className="p-0.5 text-[#DC2626] hover:text-[#991B1B] hover:bg-[#FEE2E2] rounded transition cursor-pointer font-bold text-sm leading-none"
-                            title="ลบหมวดหมู่นี้"
+                            className="text-red-500 hover:text-red-700 font-bold ml-1"
                           >
                             ×
                           </button>
@@ -1229,13 +1397,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              {/* Loyalty Program Settings */}
-              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-4">
+              {/* Loyalty CRM Settings */}
+              <div className="bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-orange-400" />
-                    <span>ระบบสะสมแต้มสมาชิก (Loyalty Program)</span>
-                  </h3>
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-5 h-5 text-[#EA580C]" />
+                    <span className="font-bold text-sm text-[#111827]">ระบบสะสมแต้มสมาชิก (Loyalty Program)</span>
+                  </div>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
                       type="checkbox"
@@ -1244,24 +1412,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         setSettings({
                           ...settings,
                           loyalty: {
-                            ...(settings.loyalty || {
-                              spendPerPoint: 25,
-                              bahtPerPoint: 1,
-                              minRedeemPoints: 10,
-                            }),
+                            ...(settings.loyalty || { spendPerPoint: 25, bahtPerPoint: 1, minRedeemPoints: 10 }),
                             enabled: e.target.checked,
                           },
                         })
                       }
                       className="sr-only peer"
                     />
-                    <div className="w-11 h-6 bg-neutral-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
+                    <div className="w-11 h-6 bg-neutral-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#EA580C]"></div>
                   </label>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs font-mono">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[#FED7AA]">
                   <div>
-                    <label className="block text-neutral-300 font-sans font-semibold mb-1">
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
                       ยอดซื้อต่อ 1 แต้ม (฿)
                     </label>
                     <input
@@ -1272,21 +1436,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         setSettings({
                           ...settings,
                           loyalty: {
-                            ...(settings.loyalty || {
-                              enabled: true,
-                              bahtPerPoint: 1,
-                              minRedeemPoints: 10,
-                            }),
+                            ...(settings.loyalty || { enabled: true, bahtPerPoint: 1, minRedeemPoints: 10 }),
                             spendPerPoint: Number(e.target.value) || 25,
                           },
                         })
                       }
-                      className="w-full px-3 py-2 bg-neutral-900 border border-neutral-800 rounded-xl text-white font-bold"
+                      className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold font-mono"
                     />
                   </div>
-
                   <div>
-                    <label className="block text-neutral-300 font-sans font-semibold mb-1">
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
                       มูลค่าลดต่อ 1 แต้ม (฿)
                     </label>
                     <input
@@ -1298,21 +1457,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         setSettings({
                           ...settings,
                           loyalty: {
-                            ...(settings.loyalty || {
-                              enabled: true,
-                              spendPerPoint: 25,
-                              minRedeemPoints: 10,
-                            }),
+                            ...(settings.loyalty || { enabled: true, spendPerPoint: 25, minRedeemPoints: 10 }),
                             bahtPerPoint: Number(e.target.value) || 1,
                           },
                         })
                       }
-                      className="w-full px-3 py-2 bg-neutral-900 border border-neutral-800 rounded-xl text-white font-bold"
+                      className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold font-mono"
                     />
                   </div>
-
                   <div>
-                    <label className="block text-neutral-300 font-sans font-semibold mb-1">
+                    <label className="block text-xs font-bold text-[#374151] mb-1">
                       แต้มขั้นต่ำในการแลก
                     </label>
                     <input
@@ -1323,16 +1477,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         setSettings({
                           ...settings,
                           loyalty: {
-                            ...(settings.loyalty || {
-                              enabled: true,
-                              spendPerPoint: 25,
-                              bahtPerPoint: 1,
-                            }),
+                            ...(settings.loyalty || { enabled: true, spendPerPoint: 25, bahtPerPoint: 1 }),
                             minRedeemPoints: Number(e.target.value) || 10,
                           },
                         })
                       }
-                      className="w-full px-3 py-2 bg-neutral-900 border border-neutral-800 rounded-xl text-white font-bold"
+                      className="w-full h-[44px] px-3 bg-white border border-[#FDBA74] rounded-xl text-sm font-bold font-mono"
                     />
                   </div>
                 </div>
@@ -1340,120 +1490,289 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
 
-          {/* TAB 7: BACKUP & RESTORE */}
+          {/* TAB 8: BACKUP, EXPORT & STORAGE HEALTH (Section 8.4) */}
           {activeTab === 'backup' && (
-            <div className="space-y-6">
-              {/* Last Backup Notice */}
-              <div className="p-4 bg-neutral-950 border border-neutral-800 rounded-xl flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2.5">
-                  <Clock className="w-4 h-4 text-orange-400" />
-                  <span>
-                    สำรองข้อมูลล่าสุด:{' '}
-                    <strong className="text-white font-mono">
-                      {settings.lastBackupAt ? new Date(settings.lastBackupAt).toLocaleString('th-TH') : 'ยังไม่เคยสำรองข้อมูล'}
-                    </strong>
-                  </span>
+            <div className="space-y-5">
+              {/* Storage Health Card (Section 8.4) */}
+              <div className="p-4 bg-[#FFF8EE] border border-[#FED7AA] rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-white border border-[#FED7AA] flex items-center justify-center text-[#EA580C]">
+                    <HardDrive className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-[#111827]">
+                      {language === 'th' ? 'สุขภาพพื้นที่จัดเก็บ (Storage Health)' : 'Storage Health'}
+                    </div>
+                    <div className="text-xs text-[#6B7280]">
+                      ใช้งานไป: <strong className="text-[#111827]">{storageEstimate.usageMb} MB</strong> / {storageEstimate.quotaMb} MB ({storageEstimate.percent}%)
+                      {storageEstimate.persisted ? ' • ปลอดภัยจากการล้างอัตโนมัติ (Persisted)' : ''}
+                    </div>
+                  </div>
                 </div>
-                {settings.lastBackupAt && (
-                  <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                    <Check className="w-3 h-3" /> ล่าสุด
-                  </span>
-                )}
+
+                <div className="text-xs font-semibold text-[#EA580C] bg-white px-3 py-1.5 rounded-xl border border-[#FED7AA] self-start sm:self-auto">
+                  สำรองล่าสุด: {settings.lastBackupAt ? new Date(settings.lastBackupAt).toLocaleString('th-TH') : 'ยังไม่เคยสำรอง'}
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Export Card */}
-                <div className="p-5 bg-neutral-950 border border-neutral-800 rounded-xl space-y-3">
-                  <div className="flex items-center gap-2 text-white font-bold text-sm">
-                    <Download className="w-4 h-4 text-emerald-400" />
+              {/* Clear Bilingual Notice Card */}
+              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-950">
+                <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="leading-relaxed">
+                  <strong>ข้อมูลบันทึกในเบราว์เซอร์ของอุปกรณ์นี้เท่านั้น (Local Storage):</strong> หากท่านล้างประวัติการท่องเว็บ (Clear Browser Data) หรือเปลี่ยนอุปกรณ์ ข้อมูลทั้งหมดจะสูญหาย กรุณากดปุ่ม <strong>"Export ข้อมูล (JSON)"</strong> เป็นประจำเพื่อเก็บไฟล์สำรองไว้อย่างปลอดภัย
+                </div>
+              </div>
+
+              {/* Dual Cards: Export JSON & Import JSON */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Export JSON Card */}
+                <div className="p-4 bg-[#FFFFFF] border border-[#FED7AA] rounded-2xl space-y-2.5 shadow-xs">
+                  <div className="flex items-center gap-2 text-sm font-extrabold text-[#111827]">
+                    <Download className="w-5 h-5 text-emerald-600" />
                     <span>ส่งออกข้อมูลสำรอง (Export JSON)</span>
                   </div>
-                  <p className="text-xs text-neutral-400 leading-relaxed">
-                    ดาวน์โหลดไฟล์ <strong className="text-neutral-200">tonys-kitchen-backup-YYYY-MM-DD.json</strong> ซึ่งรวมทุกตาราง:
-                    สูตรอาหาร วัตถุดิบ รายการสินค้า โต๊ะ ออเดอร์ กะสมาชิก และรูปภาพทั้งหมด
+                  <p className="text-xs text-[#6B7280]">
+                    ดาวน์โหลดไฟล์ <strong className="text-[#111827]">tonys-kitchen-backup-YYYY-MM-DD.json</strong> รวมทุกตารางข้อมูล (สูตร, วัตถุดิบ, เมนู, โต๊ะ, ออเดอร์, กะ, สมาชิก, รายจ่าย และรูปภาพ)
                   </p>
                   <button
-                    onClick={handleExport}
-                    className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition"
+                    type="button"
+                    onClick={handleExportJSON}
+                    className="w-full h-[46px] bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs cursor-pointer transition"
                   >
                     <Download className="w-4 h-4" />
                     <span>Export ข้อมูล (JSON)</span>
                   </button>
                 </div>
 
-                {/* Import Card */}
-                <div className="p-5 bg-neutral-950 border border-neutral-800 rounded-xl space-y-3">
-                  <div className="flex items-center gap-2 text-white font-bold text-sm">
-                    <Upload className="w-4 h-4 text-sky-400" />
+                {/* Import JSON Card */}
+                <div className="p-4 bg-[#FFFFFF] border border-[#FED7AA] rounded-2xl space-y-2.5 shadow-xs">
+                  <div className="flex items-center gap-2 text-sm font-extrabold text-[#111827]">
+                    <Upload className="w-5 h-5 text-[#EA580C]" />
                     <span>กู้คืนข้อมูลสำรอง (Import JSON)</span>
                   </div>
-                  <p className="text-xs text-neutral-400 leading-relaxed">
-                    นำเข้าไฟล์ .json ที่สำรองไว้ เพื่อกู้คืนข้อมูลหรือย้ายข้อมูลมาเปิดใช้งานบนเครื่องใหม่
+                  <p className="text-xs text-[#6B7280]">
+                    นำเข้าไฟล์ .json ที่สำรองไว้ พร้อมระบบตรวจสอบความถูกต้องและสรุปจำนวนรายการก่อนยืนยันนำเข้าทับข้อมูลเดิม
                   </p>
                   <input
                     type="file"
                     ref={fileInputRef}
-                    onChange={handleFileImport}
+                    onChange={handleFileSelected}
                     accept=".json"
                     className="hidden"
                   />
                   <button
+                    type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-full py-2.5 px-4 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition"
+                    className="w-full h-[46px] bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-xs cursor-pointer transition"
                   >
                     <Upload className="w-4 h-4" />
                     <span>Import ข้อมูล (JSON)</span>
                   </button>
-                  {importStatus && (
-                    <div className="text-xs text-orange-400 text-center font-bold mt-1">{importStatus}</div>
-                  )}
                 </div>
               </div>
 
-              {/* Danger Zone: Reset presets */}
-              <div className="p-4 bg-rose-950/20 border border-rose-900/40 rounded-xl space-y-3">
-                <div className="flex items-center gap-2 text-rose-400 font-bold text-sm">
-                  <AlertTriangle className="w-4 h-4" />
-                  <span>เขตระวัง (Danger Zone)</span>
+              {/* Export Bills CSV (date range) (Section 8.4) */}
+              <div className="p-4 bg-[#FFFFFF] border border-[#FED7AA] rounded-2xl space-y-3 shadow-xs">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-[#111827]">
+                  <FileSpreadsheet className="w-5 h-5 text-blue-600" />
+                  <span>ส่งออกรายงานบิลขาย (Export Bills CSV)</span>
                 </div>
-                <p className="text-xs text-neutral-400 leading-relaxed">
-                  หากต้องการล้างข้อมูลและเริ่มต้นใหม่ สามารถโหลดชุดตัวอย่างอาหารไทยสูตรมาตรฐานของ Tony's Kitchen กลับมาได้ทันที
+                <p className="text-xs text-[#6B7280]">
+                  ส่งออกไฟล์ .csv สำหรับฝ่ายบัญชี (มี UTF-8 BOM เปิดใน Microsoft Excel ภาษาไทยได้ทันทีโดยไม่เป็นภาษาต่างดาว)
                 </p>
-                <button
-                  onClick={handleResetPresets}
-                  className="py-2 px-3 bg-neutral-900 hover:bg-rose-900/50 border border-rose-800/60 text-rose-300 font-bold rounded-lg text-xs flex items-center gap-2 transition"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>โหลดข้อมูลตัวอย่างเริ่มต้นของร้านใหม่</span>
-                </button>
+                <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
+                  <div className="flex items-center gap-1.5 w-full sm:w-auto">
+                    <span className="text-xs font-bold text-[#6B7280]">ตั้งแต่วันที่:</span>
+                    <input
+                      type="date"
+                      value={csvStartDate}
+                      onChange={(e) => setCsvStartDate(e.target.value)}
+                      className="h-[44px] px-3 bg-[#FFF8EE] border border-[#FDBA74] rounded-xl text-xs font-mono font-bold"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5 w-full sm:w-auto">
+                    <span className="text-xs font-bold text-[#6B7280]">ถึงวันที่:</span>
+                    <input
+                      type="date"
+                      value={csvEndDate}
+                      onChange={(e) => setCsvEndDate(e.target.value)}
+                      className="h-[44px] px-3 bg-[#FFF8EE] border border-[#FDBA74] rounded-xl text-xs font-mono font-bold"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleExportBillsCSV}
+                    className="h-[44px] px-5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-xs cursor-pointer w-full sm:w-auto ml-auto"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>ดาวน์โหลด CSV</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Danger Zone: Load Sample Data & Clear All Data */}
+              <div className="p-4 bg-red-50 border border-red-200 rounded-2xl space-y-3">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-red-800">
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
+                  <span>จัดการข้อมูลระบบ & ข้อมูลตัวอย่าง</span>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleLoadSampleData}
+                    className="flex-1 h-[44px] px-3 bg-white border border-[#FED7AA] hover:bg-[#FFEDD5] text-[#9A3412] font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                  >
+                    <RotateCcw className="w-4 h-4 text-[#EA580C]" />
+                    <span>โหลดข้อมูลตัวอย่าง (Load sample data)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsClearAllModalOpen(true);
+                      setClearConfirmText('');
+                    }}
+                    className="flex-1 h-[44px] px-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>ล้างข้อมูลทั้งหมด (Clear all data)</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
         </div>
 
-        {/* Footer Actions */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-neutral-800 bg-neutral-950/70">
-          <div className="text-xs text-neutral-500">
-            ระบบบันทึกในเบราว์เซอร์ของคุณ (Offline IndexedDB)
+        {/* Modal Bottom Sticky Footer */}
+        <div className="flex items-center justify-between px-6 py-4 border-t border-[#FED7AA] bg-[#FFF8EE]">
+          <div className="text-xs text-[#6B7280]">
+            Tony's Kitchen • Offline-First Restaurant Engine
           </div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs font-bold text-neutral-300 hover:text-white bg-neutral-800 hover:bg-neutral-700 rounded-xl transition"
+              className="px-4 py-2.5 rounded-xl border border-[#FED7AA] bg-white hover:bg-neutral-100 text-[#374151] font-bold text-xs cursor-pointer min-h-[44px]"
             >
-              {t.cancel || 'ยกเลิก'}
+              {language === 'th' ? 'ยกเลิก' : 'Cancel'}
             </button>
             <button
-              onClick={handleSave}
+              type="button"
               disabled={isSaving}
-              className="px-5 py-2 text-xs font-bold text-neutral-950 bg-orange-500 hover:bg-orange-400 rounded-xl shadow-lg shadow-orange-500/20 flex items-center gap-1.5 transition"
+              onClick={handleSave}
+              className="px-6 py-2.5 rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold text-xs shadow-xs flex items-center gap-1.5 cursor-pointer min-h-[44px] disabled:opacity-50"
             >
               <Check className="w-4 h-4" />
-              <span>{isSaving ? 'กำลังบันทึก...' : t.save || 'บันทึกการตั้งค่า'}</span>
+              <span>{isSaving ? 'กำลังบันทึก...' : language === 'th' ? 'บันทึกการตั้งค่า' : 'Save Settings'}</span>
             </button>
           </div>
         </div>
       </div>
+
+      {/* JSON Import Confirmation Modal (Section 8.4) */}
+      {pendingImportData && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white border border-[#FED7AA] rounded-3xl w-full max-w-md p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-2 text-base font-extrabold text-[#111827]">
+              <Upload className="w-5 h-5 text-[#EA580C]" />
+              <span>ยืนยันการนำเข้าข้อมูลสำรอง (Confirm Import)</span>
+            </div>
+            <p className="text-xs text-[#374151] leading-relaxed">
+              ตรวจพบไฟล์สำรองข้อมูลที่ถูกต้อง ตารางข้อมูลที่จะถูกนำเข้ามาแทนที่ข้อมูลปัจจุบัน:
+            </p>
+            <div className="p-3 bg-[#FFF8EE] rounded-xl border border-[#FED7AA] text-xs space-y-1.5">
+              <div className="flex justify-between">
+                <span>วัตถุดิบ (Ingredients):</span>
+                <strong className="font-mono">{pendingImportData.counts.ingredients} รายการ</strong>
+              </div>
+              <div className="flex justify-between">
+                <span>สูตรอาหาร (Recipes):</span>
+                <strong className="font-mono">{pendingImportData.counts.recipes} รายการ</strong>
+              </div>
+              <div className="flex justify-between">
+                <span>สินค้าขาย POS (Products):</span>
+                <strong className="font-mono">{pendingImportData.counts.products} รายการ</strong>
+              </div>
+              <div className="flex justify-between">
+                <span>บิลการขาย (Orders):</span>
+                <strong className="font-mono">{pendingImportData.counts.orders} บิล</strong>
+              </div>
+              <div className="flex justify-between">
+                <span>สมาชิกสะสมแต้ม (Members):</span>
+                <strong className="font-mono">{pendingImportData.counts.members} คน</strong>
+              </div>
+              <div className="flex justify-between">
+                <span>โต๊ะอาหาร (Tables):</span>
+                <strong className="font-mono">{pendingImportData.counts.tables} โต๊ะ</strong>
+              </div>
+            </div>
+            <div className="p-2.5 bg-red-50 text-red-700 border border-red-200 rounded-xl text-xs font-semibold">
+              ⚠️ การนำเข้าจะเขียนทับข้อมูลปัจจุบันของร้านทั้งหมด กรุณายืนยันหากท่านต้องการดำเนินการ
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPendingImportData(null)}
+                className="px-4 py-2 rounded-xl border border-[#FED7AA] bg-white text-xs font-bold text-[#6B7280]"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmImport}
+                className="px-5 py-2 rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white text-xs font-bold shadow-xs"
+              >
+                ยืนยันเขียนทับและนำเข้า
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear All Data 2-Step Confirmation Modal (Section 8.4) */}
+      {isClearAllModalOpen && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white border border-red-300 rounded-3xl w-full max-w-md p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-2 text-base font-extrabold text-red-600">
+              <AlertTriangle className="w-6 h-6" />
+              <span>ยืนยันล้างข้อมูลทั้งหมด (Clear All Data)</span>
+            </div>
+            <p className="text-xs text-[#374151] leading-relaxed">
+              การดำเนินการนี้จะล้างข้อมูลวัตถุดิบ สูตรอาหาร สินค้า บิลการขาย โต๊ะ สมาชิก และประวัติรายจ่ายทั้งหมดในเบราว์เซอร์นี้
+            </p>
+            <div>
+              <label className="block text-xs font-bold text-[#374151] mb-1">
+                พิมพ์คำว่า <span className="text-red-600 font-mono font-black">DELETE</span> เพื่อยืนยัน:
+              </label>
+              <input
+                type="text"
+                value={clearConfirmText}
+                onChange={(e) => setClearConfirmText(e.target.value)}
+                placeholder="DELETE"
+                className="w-full h-[44px] px-3 border border-red-300 rounded-xl font-mono font-bold text-center text-red-600 focus:ring-2 focus:ring-red-500"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsClearAllModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-[#FED7AA] bg-white text-xs font-bold text-[#6B7280]"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={clearConfirmText !== 'DELETE'}
+                onClick={handleExecuteClearAll}
+                className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-xs disabled:opacity-40"
+              >
+                ล้างข้อมูลทั้งหมดทันที
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

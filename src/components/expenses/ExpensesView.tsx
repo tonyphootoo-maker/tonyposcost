@@ -101,10 +101,88 @@ export const ExpensesView: React.FC = () => {
     }
   };
 
-  const categories =
-    settings?.ingredientCategories && settings.ingredientCategories.length > 0
-      ? DEFAULT_EXPENSE_CATEGORIES
-      : DEFAULT_EXPENSE_CATEGORIES;
+  const categories: string[] =
+    settings?.expenseCategories && settings.expenseCategories.length > 0
+      ? settings.expenseCategories
+      : [...DEFAULT_EXPENSE_CATEGORIES];
+
+  const handleAddCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCategoryName.trim()) return;
+    const catName = newCategoryName.trim();
+    if (categories.includes(catName)) {
+      showToast({ title: 'หมวดหมู่นี้มีอยู่แล้ว', message: `หมวดหมู่ "${catName}" มีอยู่ในระบบแล้ว`, type: 'info' });
+      return;
+    }
+
+    const updatedCategories = [...categories, catName];
+    const updatedSettings: RestaurantSettings = {
+      ...(settings || ({} as RestaurantSettings)),
+      id: 'current_settings',
+      restaurantNameTh: settings?.restaurantNameTh || "Tony's Kitchen",
+      restaurantNameEn: settings?.restaurantNameEn || "Tony's Kitchen",
+      tagline: settings?.tagline || '',
+      addressTh: settings?.addressTh || '',
+      addressEn: settings?.addressEn || '',
+      phone: settings?.phone || '',
+      taxId: settings?.taxId || '',
+      promptPayId: settings?.promptPayId || '',
+      promptPayName: settings?.promptPayName || '',
+      currency: settings?.currency || 'THB',
+      vatEnabled: settings?.vatEnabled ?? false,
+      vatRate: settings?.vatRate ?? 7,
+      vatInclusive: settings?.vatInclusive ?? true,
+      serviceChargeEnabled: settings?.serviceChargeEnabled ?? false,
+      serviceChargeRate: settings?.serviceChargeRate ?? 10,
+      receiptHeaderMessage: settings?.receiptHeaderMessage || '',
+      receiptFooterMessage: settings?.receiptFooterMessage || '',
+      receiptWidth: settings?.receiptWidth || '80mm',
+      language: settings?.language || 'th',
+      defaultTableZone: settings?.defaultTableZone || 'indoor',
+      soundEnabled: settings?.soundEnabled ?? true,
+      expenseCategories: updatedCategories,
+    };
+
+    setSettings(updatedSettings);
+    await dbPut('settings', updatedSettings);
+    setNewCategoryName('');
+    showToast({ title: 'เพิ่มหมวดหมู่สำเร็จ', message: `เพิ่มหมวดหมู่ "${catName}" เรียบร้อย`, type: 'success' });
+  };
+
+  const handleDeleteCategory = async (catName: string) => {
+    if (!confirm(`คุณต้องการลบหมวดหมู่ "${catName}" หรือไม่?`)) return;
+    const updatedCategories = categories.filter((c) => c !== catName);
+    const updatedSettings: RestaurantSettings = {
+      ...(settings || ({} as RestaurantSettings)),
+      id: 'current_settings',
+      restaurantNameTh: settings?.restaurantNameTh || "Tony's Kitchen",
+      restaurantNameEn: settings?.restaurantNameEn || "Tony's Kitchen",
+      tagline: settings?.tagline || '',
+      addressTh: settings?.addressTh || '',
+      addressEn: settings?.addressEn || '',
+      phone: settings?.phone || '',
+      taxId: settings?.taxId || '',
+      promptPayId: settings?.promptPayId || '',
+      promptPayName: settings?.promptPayName || '',
+      currency: settings?.currency || 'THB',
+      vatEnabled: settings?.vatEnabled ?? false,
+      vatRate: settings?.vatRate ?? 7,
+      vatInclusive: settings?.vatInclusive ?? true,
+      serviceChargeEnabled: settings?.serviceChargeEnabled ?? false,
+      serviceChargeRate: settings?.serviceChargeRate ?? 10,
+      receiptHeaderMessage: settings?.receiptHeaderMessage || '',
+      receiptFooterMessage: settings?.receiptFooterMessage || '',
+      receiptWidth: settings?.receiptWidth || '80mm',
+      language: settings?.language || 'th',
+      defaultTableZone: settings?.defaultTableZone || 'indoor',
+      soundEnabled: settings?.soundEnabled ?? true,
+      expenseCategories: updatedCategories.length > 0 ? updatedCategories : [...DEFAULT_EXPENSE_CATEGORIES],
+    };
+
+    setSettings(updatedSettings);
+    await dbPut('settings', updatedSettings);
+    showToast({ title: 'ลบหมวดหมู่แล้ว', message: `ลบหมวดหมู่ "${catName}" เรียบร้อย`, type: 'info' });
+  };
 
   // Save Daily Expense
   const handleSaveDaily = async (e: React.FormEvent) => {
@@ -257,7 +335,7 @@ export const ExpensesView: React.FC = () => {
               <Plus className="w-4 h-4" />
               <span>บันทึกรายจ่ายรายวัน</span>
             </button>
-          ) : (
+          ) : activeTab === 'recurring' ? (
             <button
               onClick={() => {
                 setRecurringForm({
@@ -275,7 +353,7 @@ export const ExpensesView: React.FC = () => {
               <Plus className="w-4 h-4" />
               <span>เพิ่มรายจ่ายประจำเดือน</span>
             </button>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -308,6 +386,21 @@ export const ExpensesView: React.FC = () => {
           <span>รายจ่ายประจำรายเดือน (Recurring Expenses)</span>
           <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[10px]">
             {recurringExpenses.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('categories')}
+          className={`px-4 py-2 rounded-t-xl text-xs font-bold transition-colors flex items-center gap-2 ${
+            activeTab === 'categories'
+              ? 'bg-white border-t-2 border-orange-500 text-orange-600 shadow-xs'
+              : 'text-[#6B7280] hover:text-[#1F2937]'
+          }`}
+        >
+          <Tag className="w-4 h-4" />
+          <span>จัดการหมวดหมู่ (Categories)</span>
+          <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px]">
+            {categories.length}
           </span>
         </button>
       </div>
@@ -429,7 +522,7 @@ export const ExpensesView: React.FC = () => {
             </div>
           </div>
         </div>
-      ) : (
+      ) : activeTab === 'recurring' ? (
         // ================= TAB 2: RECURRING EXPENSES (Section 8.1) =================
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -505,6 +598,84 @@ export const ExpensesView: React.FC = () => {
                       </tr>
                     ))
                   )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ) : (
+        // ================= TAB 3: CATEGORY MANAGEMENT =================
+        <div className="space-y-4">
+          <div className="bg-white p-5 rounded-xl border border-[#FED7AA] shadow-xs">
+            <h3 className="font-extrabold text-sm text-[#1F2937] flex items-center gap-2 mb-3">
+              <Tag className="w-4 h-4 text-orange-500" />
+              <span>เพิ่มหมวดหมู่รายจ่ายใหม่</span>
+            </h3>
+            <form onSubmit={handleAddCategory} className="flex gap-2 text-xs">
+              <input
+                type="text"
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+                placeholder="ระบุชื่อหมวดหมู่ใหม่ เช่น ค่าบรรจุภัณฑ์, ซ่อมแซม..."
+                className="flex-1 px-3.5 py-2.5 bg-[#FFFBF5] border border-[#FED7AA] rounded-xl text-xs focus:outline-none focus:border-orange-500 min-h-[44px]"
+              />
+              <button
+                type="submit"
+                className="px-5 py-2.5 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl shadow-xs min-h-[44px] flex items-center gap-1.5 transition-colors shrink-0"
+              >
+                <Plus className="w-4 h-4" />
+                <span>เพิ่มหมวดหมู่</span>
+              </button>
+            </form>
+          </div>
+
+          <div className="bg-white rounded-xl border border-[#FED7AA] overflow-hidden shadow-xs">
+            <div className="p-4 bg-[#FFFBF5] border-b border-[#FED7AA] flex justify-between items-center text-xs font-bold text-[#1F2937]">
+              <span>หมวดหมู่รายจ่ายทั้งหมด ({categories.length} หมวด)</span>
+              <span className="text-[#6B7280]">หมวดหมู่เหล่านี้จะแสดงในเมนูบันทึกรายจ่ายและงบ P&L</span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-[#FFFBF5] text-xs font-bold text-[#6B7280] border-b border-[#FED7AA]">
+                  <tr>
+                    <th className="p-3.5">#</th>
+                    <th className="p-3.5">ชื่อหมวดหมู่รายจ่าย</th>
+                    <th className="p-3.5 text-center">จำนวนรายการที่ใช้</th>
+                    <th className="p-3.5 text-right">ยอดรวมรายจ่ายในหมวด (฿)</th>
+                    <th className="p-3.5 text-center">จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#FED7AA]">
+                  {categories.map((cat, idx) => {
+                    const matchedExpenses = expenses.filter((e) => e.category === cat || e.categoryId === cat);
+                    const totalAmt = matchedExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+                    return (
+                      <tr key={cat} className="hover:bg-orange-50/20 transition-colors">
+                        <td className="p-3.5 text-xs text-[#6B7280] font-mono">{idx + 1}</td>
+                        <td className="p-3.5 font-bold text-[#1F2937]">
+                          <span className="px-2.5 py-1 rounded-md bg-orange-50 text-orange-800 text-xs font-semibold border border-orange-200">
+                            {cat}
+                          </span>
+                        </td>
+                        <td className="p-3.5 text-center font-mono text-xs text-[#6B7280]">
+                          {matchedExpenses.length} รายการ
+                        </td>
+                        <td className="p-3.5 text-right font-mono font-bold text-red-600">
+                          {totalAmt > 0 ? `฿${totalAmt.toLocaleString()}` : '-'}
+                        </td>
+                        <td className="p-3.5 text-center">
+                          <button
+                            onClick={() => handleDeleteCategory(cat)}
+                            className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="ลบหมวดหมู่"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

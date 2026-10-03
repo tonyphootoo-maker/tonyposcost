@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ReceiptText,
   Search,
@@ -10,10 +10,11 @@ import {
   QrCode,
   XCircle,
   Clock,
-  ArrowUpDown
+  ArrowUpDown,
+  Filter,
 } from 'lucide-react';
 import { useTranslation } from '../../i18n';
-import { dbGetAll, dbPut, dbGet } from '../../db';
+import { dbGetAll, dbPut, dbGet, getOrdersByDateRange } from '../../db';
 import { Order, RestaurantSettings } from '../../types';
 import { showToast } from '../common/ToastContainer';
 
@@ -23,12 +24,14 @@ export const BillsHistoryView: React.FC = () => {
   const [settings, setSettings] = useState<RestaurantSettings | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'cancelled'>('all');
+  const [dateRangeFilter, setDateRangeFilter] = useState<'all' | 'today' | '7days' | '30days'>('all');
+  const [displayLimit, setDisplayLimit] = useState<number>(50);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
   useEffect(() => {
     loadBills();
     loadSettings();
-  }, []);
+  }, [dateRangeFilter]);
 
   const loadSettings = async () => {
     const s = await dbGet<RestaurantSettings>('settings', 'current_settings');
@@ -37,8 +40,25 @@ export const BillsHistoryView: React.FC = () => {
 
   const loadBills = async () => {
     try {
-      const allOrders = await dbGetAll<Order>('orders');
-      // Show completed or cancelled bills first
+      let allOrders: Order[] = [];
+      const now = new Date();
+
+      if (dateRangeFilter === 'today') {
+        const todayStr = now.toISOString().split('T')[0];
+        allOrders = await getOrdersByDateRange(todayStr, todayStr);
+      } else if (dateRangeFilter === '7days') {
+        const past7 = new Date(now.getTime() - 7 * 86400000).toISOString().split('T')[0];
+        const todayStr = now.toISOString().split('T')[0];
+        allOrders = await getOrdersByDateRange(past7, todayStr);
+      } else if (dateRangeFilter === '30days') {
+        const past30 = new Date(now.getTime() - 30 * 86400000).toISOString().split('T')[0];
+        const todayStr = now.toISOString().split('T')[0];
+        allOrders = await getOrdersByDateRange(past30, todayStr);
+      } else {
+        allOrders = await dbGetAll<Order>('orders');
+      }
+
+      // Show latest bills first
       allOrders.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setOrders(allOrders);
       if (allOrders.length > 0 && !selectedOrder) {
@@ -71,15 +91,25 @@ export const BillsHistoryView: React.FC = () => {
     }
   };
 
-  const filteredBills = orders.filter((o) => {
-    const matchesSearch =
-      o.orderNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (o.tableName && o.tableName.toLowerCase().includes(searchQuery.toLowerCase()));
+  // Pure memoized filtering for high performance with thousands of bills
+  const filteredBills = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return orders.filter((o) => {
+      const matchesSearch =
+        !q ||
+        (o.orderNumber && o.orderNumber.toLowerCase().includes(q)) ||
+        (o.tableName && o.tableName.toLowerCase().includes(q)) ||
+        (o.paymentMethod && o.paymentMethod.toLowerCase().includes(q));
 
-    if (statusFilter === 'paid') return matchesSearch && o.status === 'paid';
-    if (statusFilter === 'cancelled') return matchesSearch && o.status === 'cancelled';
-    return matchesSearch;
-  });
+      if (statusFilter === 'paid') return matchesSearch && o.status === 'paid';
+      if (statusFilter === 'cancelled') return matchesSearch && o.status === 'cancelled';
+      return matchesSearch;
+    });
+  }, [orders, searchQuery, statusFilter]);
+
+  const visibleBills = useMemo(() => {
+    return filteredBills.slice(0, displayLimit);
+  }, [filteredBills, displayLimit]);
 
   return (
     <div className="space-y-4">

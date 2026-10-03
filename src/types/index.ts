@@ -194,6 +194,7 @@ export interface Settings {
   priceRounding: 1 | 5 | 10;
   ingredientCategories: string[];
   recipeCategories: string[];
+  expenseCategories?: string[];
   lastBackupAt?: string;
   promptPayId?: string;
   receipt: ReceiptSettings;
@@ -289,6 +290,7 @@ export interface ModifierOption {
   nameTh: string;
   nameEn: string;
   priceDelta: number; // ฿, default 0
+  costDelta?: number; // ฿ cost impact
 }
 
 export type ProductModifierOption = ModifierOption;
