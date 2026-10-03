@@ -3,6 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <script>
+      // Ensure trailing slash for GitHub Pages project sites so relative asset paths (./assets/...) resolve properly
+      (function() {
+        var path = window.location.pathname;
+        if (path && !path.endsWith('/') && !path.split('/').pop().includes('.')) {
+          window.location.replace(window.location.origin + path + '/' + window.location.search + window.location.hash);
+        }
+      })();
+    </script>
     <title>Tony's Kitchen - Restaurant POS & Food Cost System</title>
     <meta name="description" content="Complete offline-first Thai restaurant POS and Food Cost management platform with menu engineering, recipe costing, kitchen tickets, table management, and financial reports." />
     <meta property="og:title" content="Tony's Kitchen - Restaurant POS & Food Cost System" />

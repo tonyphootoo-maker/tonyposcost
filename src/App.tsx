@@ -51,16 +51,22 @@ function AppContent() {
   }, []);
 
   const bootstrap = async () => {
-    const initialized = await isDatabaseInitialized();
-    if (!initialized) {
+    try {
+      const initialized = await isDatabaseInitialized();
+      if (!initialized) {
+        setIsWelcomeModalOpen(true);
+        setIsReady(true);
+        return;
+      }
+
+      await loadSettingsAndShift();
+      await updatePendingOrdersCount();
+      setIsReady(true);
+    } catch (err) {
+      console.warn('Bootstrap initialization encountered issue, proceeding to UI:', err);
       setIsWelcomeModalOpen(true);
       setIsReady(true);
-      return;
     }
-
-    await loadSettingsAndShift();
-    await updatePendingOrdersCount();
-    setIsReady(true);
   };
 
   const handleStartChoice = async (loadSample: boolean) => {

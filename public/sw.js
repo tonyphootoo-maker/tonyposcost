@@ -32,7 +32,7 @@ self.addEventListener('fetch', (event) => {
       }
       return fetch(event.request)
         .then((networkResponse) => {
-          if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
+          if (!networkResponse || networkResponse.status !== 200) {
             return networkResponse;
           }
           const responseToCache = networkResponse.clone();
@@ -41,11 +41,11 @@ self.addEventListener('fetch', (event) => {
           });
           return networkResponse;
         })
-        .catch(() => {
-          // If offline and navigating to an HTML page, return root cached response
+        .catch((fetchError) => {
           if (event.request.mode === 'navigate') {
             return caches.match('./') || caches.match('./index.html');
           }
+          throw fetchError;
         });
     })
   );

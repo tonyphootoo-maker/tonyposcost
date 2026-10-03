@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Tony's Kitchen - Redirecting...</title>
+    <script>
+      // Single Page Application redirect for GitHub Pages
+      (function() {
+        var path = window.location.pathname;
+        // Keep repository name segment if hosted under https://user.github.io/repo/
+        var segments = path.split('/').filter(Boolean);
+        var repoPrefix = segments.length > 0 ? '/' + segments[0] + '/' : '/';
+        window.location.replace(window.location.origin + repoPrefix);
+      })();
+    </script>
+  </head>
+  <body style="font-family: sans-serif; text-align: center; padding: 40px; background: #FFFBF5; color: #1F2937;">
+    <p>กำลังนำคุณกลับไปยังหน้าหลัก...</p>
+    <p><a href="./" style="color: #ea580c; text-decoration: underline;">คลิกที่นี่หากไม่เปลี่ยนหน้าอัตโนมัติ</a></p>
+  </body>
+</html>

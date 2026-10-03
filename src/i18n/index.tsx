@@ -7,7 +7,7 @@ export const translations = { th, en };
 
 export type TranslateFunction = {
   (key: TranslationKey, params?: Record<string, string | number>): string;
-  [key: string]: unknown;
+  [key: string]: any;
 };
 
 interface I18nContextType {

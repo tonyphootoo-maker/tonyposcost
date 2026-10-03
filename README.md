@@ -76,6 +76,17 @@ npm run preview
    - เมื่อสำเร็จ URL ของเว็บไซต์จะปรากฏที่หน้า Pages (เช่น `https://<YOUR_USERNAME>.github.io/tonys-kitchen/`)
    - สามารถเปิดใช้งานผ่านคอมพิวเตอร์ แท็บเล็ต หรือสมาร์ตโฟนได้ทันที
 
+### 💡 สาเหตุที่หน้าจอว่างเปล่า (Blank Screen) และวิธีแก้:
+1. **ต้องตั้งค่า Source เป็น "GitHub Actions" (สำคัญที่สุด):**
+   - ไปที่ GitHub Repo ของท่าน → กด **Settings** → เมนูด้านซ้ายเลือก **Pages**
+   - ในหัวข้อ **Build and deployment > Source** ตรวจสอบว่าเลือกเป็น **"GitHub Actions"** (ห้ามเลือก "Deploy from a branch" เพราะแบบนั้น GitHub จะอ่านไฟล์ดิบ `/src/main.tsx` ซึ่งเบราว์เซอร์อ่านไม่ได้)
+2. **การ Build อัตโนมัติใน GitHub Actions:**
+   - เมื่อ Push โค้ดที่มีไฟล์ `package-lock.json` และ `.github/workflows/deploy.yml` ตัว GitHub Actions จะทำการรัน `npm run build` และอัปโหลดโฟลเดอร์ `dist/` ขึ้นโฮสต์ให้โดยอัตโนมัติ
+3. **การเข้าใช้งาน URL:**
+   - ควรเข้าใช้งานที่ `https://<YOUR_USERNAME>.github.io/<REPO_NAME>/` (มีเครื่องหมาย `/` ปิดท้าย) ซึ่งระบบได้ใส่ระบบตรวจสอบ Trailing Slash อัตโนมัติไว้แล้ว ป้องกันไฟล์ assets โหลดไม่ติด
+4. **หากเกิดข้อผิดพลาดในเบราว์เซอร์:**
+   - ระบบมีหน้าต่าง **Error Boundary** คอยดักจับข้อผิดพลาด พร้อมปุ่ม "รีโหลด" และ "ล้างแคช" ทำให้หน้าจอไม่มีวันค้างขาว
+
 ---
 
 ## 📋 ข้อสมมติฐานในการออกแบบ (Assumptions)

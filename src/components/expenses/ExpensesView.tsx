@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Expense, RecurringExpense, Settings } from '../../types';
+import { Expense, RecurringExpense, RestaurantSettings } from '../../types';
 import { dbGetAll, dbPut, dbDelete, dbGet } from '../../db';
 import { useTranslation } from '../../i18n';
 import { showToast } from '../common/ToastContainer';
@@ -26,7 +26,7 @@ export const ExpensesView: React.FC = () => {
   const { t, formatCurrency, formatDate } = useTranslation();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [recurringExpenses, setRecurringExpenses] = useState<RecurringExpense[]>([]);
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settings, setSettings] = useState<RestaurantSettings | null>(null);
 
   const [activeTab, setActiveTab] = useState<'daily' | 'recurring' | 'categories'>('daily');
   const [search, setSearch] = useState('');
@@ -81,7 +81,7 @@ export const ExpensesView: React.FC = () => {
     const [expList, metaRec, savedSettings] = await Promise.all([
       dbGetAll<Expense>('expenses'),
       dbGet<{ id: string; list: RecurringExpense[] }>('meta', 'recurring_expenses'),
-      dbGet<Settings>('settings', 'current_settings'),
+      dbGet<RestaurantSettings>('settings', 'current_settings'),
     ]);
 
     let loadedRec = metaRec?.list;
