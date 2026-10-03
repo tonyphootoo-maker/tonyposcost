@@ -562,15 +562,17 @@ export const SAMPLE_PRODUCTS: Product[] = [
 // ---------------------------------------------------------------------------
 export const SAMPLE_TABLES: RestaurantTable[] = [
   // Zone 1: Indoor (ห้องแอร์)
-  { id: 'tbl_t1', name: 'T-01', zone: 'indoor', seats: 4, status: 'empty' },
-  { id: 'tbl_t2', name: 'T-02', zone: 'indoor', seats: 4, status: 'empty' },
-  { id: 'tbl_t3', name: 'T-03', zone: 'indoor', seats: 2, status: 'empty' },
-  { id: 'tbl_t4', name: 'T-04', zone: 'indoor', seats: 6, status: 'empty' },
+  { id: 'tbl_t1', name: 'T-01', zone: 'indoor', seats: 2, shape: 'square', x: 40, y: 40, w: 75, h: 75, status: 'empty' },
+  { id: 'tbl_t2', name: 'T-02', zone: 'indoor', seats: 4, shape: 'rect', x: 160, y: 40, w: 105, h: 70, status: 'empty' },
+  { id: 'tbl_t3', name: 'T-03', zone: 'indoor', seats: 4, shape: 'round', x: 310, y: 35, w: 80, h: 80, status: 'empty' },
+  { id: 'tbl_t4', name: 'T-04', zone: 'indoor', seats: 6, shape: 'booth', x: 430, y: 40, w: 110, h: 85, status: 'empty' },
+  { id: 'tbl_b1', name: 'Bar-01', zone: 'indoor', seats: 4, shape: 'bar', x: 40, y: 175, w: 150, h: 50, status: 'empty' },
+  { id: 'tbl_t5', name: 'T-05', zone: 'indoor', seats: 4, shape: 'rect', x: 230, y: 165, w: 105, h: 70, status: 'empty' },
   // Zone 2: Outdoor (ระเบียงสวน)
-  { id: 'tbl_o1', name: 'O-01', zone: 'outdoor', seats: 4, status: 'empty' },
-  { id: 'tbl_o2', name: 'O-02', zone: 'outdoor', seats: 4, status: 'empty' },
-  { id: 'tbl_o3', name: 'O-03', zone: 'outdoor', seats: 2, status: 'empty' },
-  { id: 'tbl_o4', name: 'O-04', zone: 'outdoor', seats: 4, status: 'empty' },
+  { id: 'tbl_o1', name: 'O-01', zone: 'outdoor', seats: 2, shape: 'round', x: 40, y: 40, w: 75, h: 75, status: 'empty' },
+  { id: 'tbl_o2', name: 'O-02', zone: 'outdoor', seats: 4, shape: 'square', x: 160, y: 40, w: 80, h: 80, status: 'empty' },
+  { id: 'tbl_o3', name: 'O-03', zone: 'outdoor', seats: 4, shape: 'rect', x: 290, y: 40, w: 105, h: 70, status: 'empty' },
+  { id: 'tbl_o4', name: 'O-04', zone: 'outdoor', seats: 6, shape: 'booth', x: 440, y: 40, w: 115, h: 85, status: 'empty' },
 ];
 
 // ---------------------------------------------------------------------------

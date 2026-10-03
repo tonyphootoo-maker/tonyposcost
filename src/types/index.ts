@@ -352,12 +352,12 @@ export interface Product {
   groupName?: string;
 }
 
-export type TableShape = 'rect' | 'round';
+export type TableShape = 'rect' | 'round' | 'square' | 'bar' | 'booth';
 export type TableStatus = 'empty' | 'occupied' | 'billing' | 'reserved';
 
 /**
  * Table & Zone
- * Table: { id, name, zoneId, shape ("rect"|"round"), x, y, w, h, seats, mergedInto? }
+ * Table: { id, name, zoneId, shape ("rect"|"round"|"square"|"bar"|"booth"), x, y, w, h, rotation, seats, mergedInto? }
  * Zone: { id, name, sortOrder }
  */
 export interface Table {
@@ -369,6 +369,7 @@ export interface Table {
   y?: number;
   w?: number;
   h?: number;
+  rotation?: number; // 0, 90, 180, 270
   seats: number;
   mergedInto?: string;
   // App specific table view properties
