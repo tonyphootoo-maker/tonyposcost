@@ -243,13 +243,14 @@ export const TableFloorView: React.FC<TableFloorViewProps> = ({
     }
   };
 
-  // ================= DRAG & DROP POSITIONING =================
+  // ================= DRAG & DROP POSITIONING (ROCK-SOLID WINDOW LISTENERS) =================
   const handlePointerDownTable = (table: RestaurantTable, e: React.PointerEvent) => {
     if (!isEditMode) return;
     // Don't drag if clicking resize handle or toolbar buttons
     const target = e.target as HTMLElement;
     if (target.closest('.no-drag-handle')) return;
 
+    e.preventDefault();
     e.stopPropagation();
     setSelectedTableId(table.id);
 
@@ -269,13 +270,12 @@ export const TableFloorView: React.FC<TableFloorViewProps> = ({
       y: pointerCanvasY - tableY,
     });
     setDragCurrentCoords({ x: tableX, y: tableY });
-
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
   };
 
   // ================= RESIZING HANDLER =================
   const handlePointerDownResize = (table: RestaurantTable, e: React.PointerEvent) => {
     if (!isEditMode) return;
+    e.preventDefault();
     e.stopPropagation();
     setSelectedTableId(table.id);
 
@@ -287,86 +287,98 @@ export const TableFloorView: React.FC<TableFloorViewProps> = ({
       h: table.h || 80,
     });
     setResizeCurrentDims({ w: table.w || 80, h: table.h || 80 });
-
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
   };
 
-  const handlePointerMoveCanvas = (e: React.PointerEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas || !isEditMode) return;
+  // Attach global window listeners whenever dragging or resizing is active
+  useEffect(() => {
+    if (!draggingTableId && !resizingTableId) return;
 
-    // Handle Active Resizing
-    if (resizingTableId) {
-      const deltaX = (e.clientX - resizeStart.pointerX) / zoomScale;
-      const deltaY = (e.clientY - resizeStart.pointerY) / zoomScale;
-
-      let newW = resizeStart.w + deltaX;
-      let newH = resizeStart.h + deltaY;
-
-      if (gridSnap > 1) {
-        newW = Math.round(newW / gridSnap) * gridSnap;
-        newH = Math.round(newH / gridSnap) * gridSnap;
-      }
-
-      // Clamp dimensions
-      newW = Math.max(55, Math.min(newW, 400));
-      newH = Math.max(45, Math.min(newH, 400));
-
-      setResizeCurrentDims({ w: Math.round(newW), h: Math.round(newH) });
-      setTables((prev) =>
-        prev.map((t) => (t.id === resizingTableId ? { ...t, w: newW, h: newH } : t))
-      );
-      return;
-    }
-
-    // Handle Active Dragging
-    if (draggingTableId) {
+    const onPointerMove = (e: PointerEvent) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
       const canvasRect = canvas.getBoundingClientRect();
-      const pointerCanvasX = (e.clientX - canvasRect.left + canvas.scrollLeft) / zoomScale;
-      const pointerCanvasY = (e.clientY - canvasRect.top + canvas.scrollTop) / zoomScale;
 
-      let newX = pointerCanvasX - dragOffset.x;
-      let newY = pointerCanvasY - dragOffset.y;
+      // Handle Resizing
+      if (resizingTableId) {
+        const deltaX = (e.clientX - resizeStart.pointerX) / zoomScale;
+        const deltaY = (e.clientY - resizeStart.pointerY) / zoomScale;
 
-      if (gridSnap > 1) {
-        newX = Math.round(newX / gridSnap) * gridSnap;
-        newY = Math.round(newY / gridSnap) * gridSnap;
+        let newW = resizeStart.w + deltaX;
+        let newH = resizeStart.h + deltaY;
+
+        if (gridSnap > 1) {
+          newW = Math.round(newW / gridSnap) * gridSnap;
+          newH = Math.round(newH / gridSnap) * gridSnap;
+        }
+
+        newW = Math.max(55, Math.min(newW, 400));
+        newH = Math.max(45, Math.min(newH, 400));
+
+        setResizeCurrentDims({ w: Math.round(newW), h: Math.round(newH) });
+        setTables((prev) =>
+          prev.map((t) => (t.id === resizingTableId ? { ...t, w: newW, h: newH } : t))
+        );
+        return;
       }
 
-      newX = Math.max(10, Math.min(newX, 2800));
-      newY = Math.max(10, Math.min(newY, 2000));
+      // Handle Dragging
+      if (draggingTableId) {
+        const pointerCanvasX = (e.clientX - canvasRect.left + canvas.scrollLeft) / zoomScale;
+        const pointerCanvasY = (e.clientY - canvasRect.top + canvas.scrollTop) / zoomScale;
 
-      setDragCurrentCoords({ x: Math.round(newX), y: Math.round(newY) });
-      setTables((prev) =>
-        prev.map((t) => (t.id === draggingTableId ? { ...t, x: newX, y: newY } : t))
-      );
-    }
-  };
+        let newX = pointerCanvasX - dragOffset.x;
+        let newY = pointerCanvasY - dragOffset.y;
 
-  const handlePointerUpCanvas = async () => {
-    if (draggingTableId) {
-      const draggedTable = tables.find((t) => t.id === draggingTableId);
-      setDraggingTableId(null);
-      setDragCurrentCoords(null);
-      if (draggedTable) {
-        await dbPut('tables', draggedTable);
+        if (gridSnap > 1) {
+          newX = Math.round(newX / gridSnap) * gridSnap;
+          newY = Math.round(newY / gridSnap) * gridSnap;
+        }
+
+        newX = Math.max(10, Math.min(newX, 2800));
+        newY = Math.max(10, Math.min(newY, 2000));
+
+        setDragCurrentCoords({ x: Math.round(newX), y: Math.round(newY) });
+        setTables((prev) =>
+          prev.map((t) => (t.id === draggingTableId ? { ...t, x: newX, y: newY } : t))
+        );
       }
-    }
+    };
 
-    if (resizingTableId) {
-      const resizedTable = tables.find((t) => t.id === resizingTableId);
-      setResizingTableId(null);
-      setResizeCurrentDims(null);
-      if (resizedTable) {
-        await dbPut('tables', resizedTable);
-        showToast({
-          title: language === 'th' ? 'ปรับขนาดเรียบร้อย' : 'Resized',
-          message: `${resizedTable.name}: ${Math.round(resizedTable.w || 80)} × ${Math.round(resizedTable.h || 80)} px`,
-          type: 'info',
-        });
+    const onPointerUp = async () => {
+      if (draggingTableId) {
+        const currentDragged = tables.find((t) => t.id === draggingTableId);
+        setDraggingTableId(null);
+        setDragCurrentCoords(null);
+        if (currentDragged) {
+          await dbPut('tables', currentDragged);
+        }
       }
-    }
-  };
+
+      if (resizingTableId) {
+        const currentResized = tables.find((t) => t.id === resizingTableId);
+        setResizingTableId(null);
+        setResizeCurrentDims(null);
+        if (currentResized) {
+          await dbPut('tables', currentResized);
+          showToast({
+            title: language === 'th' ? 'ปรับขนาดเรียบร้อย' : 'Resized',
+            message: `${currentResized.name}: ${Math.round(currentResized.w || 80)} × ${Math.round(currentResized.h || 80)} px`,
+            type: 'info',
+          });
+        }
+      }
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, [draggingTableId, resizingTableId, dragOffset, gridSnap, zoomScale, resizeStart, tables, language]);
 
   // ================= ADD & EDIT TABLE MODAL =================
   const handleOpenAddTable = () => {
@@ -1084,92 +1096,103 @@ export const TableFloorView: React.FC<TableFloorViewProps> = ({
             <span>{language === 'th' ? 'ย้าย/รวมโต๊ะ' : 'Move/Merge'}</span>
           </button>
 
-          {/* Edit Mode Toggle */}
+          {/* Edit Mode Toggle - Prominent Button */}
           <button
             type="button"
             onClick={() => {
-              setIsEditMode(!isEditMode);
+              const nextMode = !isEditMode;
+              setIsEditMode(nextMode);
               setSelectedTableId(null);
+              if (nextMode) {
+                showToast({
+                  title: language === 'th' ? 'เข้าสู่โหมดแก้ไขผัง' : 'Edit Mode Active',
+                  message: language === 'th' ? 'คลิกลากโต๊ะเพื่อย้าย หรือดึงมุมล่างขวาเพื่อย่อ/ขยายได้ทันที' : 'Drag tables freely or pull bottom-right handle to resize',
+                  type: 'info',
+                });
+              } else {
+                showToast({
+                  title: language === 'th' ? 'บันทึกผังโต๊ะแล้ว' : 'Layout Saved',
+                  message: language === 'th' ? 'บันทึกตำแหน่งและขนาดโต๊ะลงฐานข้อมูลเรียบร้อย' : 'Saved to database',
+                  type: 'success',
+                });
+              }
             }}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-extrabold transition-all shadow-sm cursor-pointer ${
               isEditMode
-                ? 'bg-[#111827] text-white hover:bg-neutral-800'
-                : 'bg-white border-2 border-[#EA580C] text-[#EA580C] hover:bg-[#FFEDD5]'
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white ring-3 ring-emerald-300'
+                : 'bg-[#EA580C] hover:bg-[#C2410C] text-white ring-2 ring-orange-200'
             }`}
           >
             {isEditMode ? (
               <>
-                <Check className="w-3.5 h-3.5" />
-                <span>{language === 'th' ? 'เสร็จสิ้นจัดผัง' : 'Done Editing'}</span>
+                <Check className="w-4 h-4" />
+                <span>{language === 'th' ? '✓ เสร็จสิ้นการจัดผัง' : 'Done Editing'}</span>
               </>
             ) : (
               <>
-                <Edit2 className="w-3.5 h-3.5" />
-                <span>{language === 'th' ? 'จัดผังโต๊ะ (Edit)' : 'Edit Layout'}</span>
+                <Edit2 className="w-4 h-4" />
+                <span>{language === 'th' ? '✏️ แก้ไขผังโต๊ะ (ย้าย/ปรับขนาด)' : 'Edit Floor Plan'}</span>
               </>
             )}
           </button>
 
-          {/* Add Table & Quick Presets */}
-          <div className="relative">
-            <div className="flex items-center rounded-xl bg-[#EA580C] text-white shadow-xs overflow-hidden">
-              <button
-                type="button"
-                onClick={handleOpenAddTable}
-                className="flex items-center gap-1.5 px-3.5 py-2 hover:bg-[#C2410C] text-xs font-bold cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>{language === 'th' ? 'เพิ่มโต๊ะ' : 'Add Table'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsPresetMenuOpen(!isPresetMenuOpen)}
-                className="px-2 py-2 border-l border-orange-400 hover:bg-[#C2410C] text-xs font-bold cursor-pointer"
-                title="เลือกโต๊ะสำเร็จรูป (Quick Presets)"
-              >
-                ▾
-              </button>
-            </div>
-
-            {/* Quick Presets Dropdown */}
-            {isPresetMenuOpen && (
-              <div className="absolute right-0 top-full mt-1.5 w-56 bg-white border border-[#FED7AA] rounded-2xl shadow-xl z-50 p-2 space-y-1 animate-scale-up">
-                <div className="text-[11px] font-bold text-[#6B7280] px-2 py-1">
-                  {language === 'th' ? 'เลือกแม่แบบโต๊ะสำเร็จรูป' : 'Quick Table Presets'}
-                </div>
-                {QUICK_PRESETS.map((preset, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => handleAddPreset(preset)}
-                    className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-[#FFF8EE] text-left text-xs font-bold text-[#374151] transition cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2">
-                      {preset.icon}
-                      <span>{preset.labelTh}</span>
-                    </div>
-                    <span className="text-[10px] text-[#9A3412] font-mono">
-                      {preset.w}×{preset.h}
-                    </span>
-                  </button>
-                ))}
-                <div className="border-t border-[#FED7AA]/60 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsPresetMenuOpen(false);
-                      handleOpenAddTable();
-                    }}
-                    className="w-full text-center py-1 text-xs font-bold text-[#EA580C] hover:bg-[#FFF3E0] rounded-lg"
-                  >
-                    + {language === 'th' ? 'กำหนดขนาดเอง...' : 'Custom size...'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          {/* Add Table Button */}
+          <button
+            type="button"
+            onClick={handleOpenAddTable}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-[#FFF3E0] text-[#EA580C] border-2 border-[#EA580C] text-xs font-bold transition shadow-xs cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>{language === 'th' ? '+ เพิ่มโต๊ะใหม่' : '+ New Table'}</span>
+          </button>
         </div>
       </div>
+
+      {/* EDIT MODE BANNER & QUICK TEMPLATE BAR (Visible when in Edit Mode) */}
+      {isEditMode && (
+        <div className="bg-[#FFF8EE] border-2 border-[#F97316] rounded-2xl p-3 shadow-xs space-y-2.5 animate-fade-in">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#FED7AA] pb-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-[#9A3412]">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#EA580C] animate-ping" />
+              <span>
+                {language === 'th'
+                  ? '🛠️ โหมดแก้ไขผังเปิดอยู่: ลากย้ายโต๊ะได้อิสระ • ดึงมุมล่างขวาของโต๊ะเพื่อย่อ/ขยาย • หรือคลิกแม่แบบโต๊ะเพื่อเพิ่มลงผังทันที'
+                  : '🛠️ Edit Mode Active: Drag tables freely • Pull bottom-right handle to resize • Click templates below to add'}
+              </span>
+            </div>
+            <span className="text-[11px] font-semibold text-[#6B7280]">
+              {language === 'th' ? 'บันทึกอัตโนมัติเมื่อปล่อยมือ' : 'Auto-saves on release'}
+            </span>
+          </div>
+
+          {/* Visual Table Templates Strip */}
+          <div>
+            <div className="text-[11px] font-bold text-[#6B7280] uppercase tracking-wider mb-1.5 flex items-center justify-between">
+              <span>{language === 'th' ? 'ตัวอย่างแบบโต๊ะและเก้าอี้ (คลิกเพื่อเพิ่มลงผังทันที):' : 'Table Templates (Click to add immediately):'}</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+              {QUICK_PRESETS.map((preset, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => handleAddPreset(preset)}
+                  className="flex flex-col items-center justify-center p-2 rounded-xl bg-white border border-[#FED7AA] hover:border-[#EA580C] hover:bg-[#FFF3E0] transition-all cursor-pointer group shadow-2xs"
+                >
+                  <div className="w-7 h-7 rounded-lg bg-[#FFEDD5] flex items-center justify-center group-hover:scale-110 transition-transform mb-1">
+                    {preset.icon}
+                  </div>
+                  <span className="text-xs font-bold text-[#111827] text-center leading-tight">
+                    {preset.labelTh}
+                  </span>
+                  <span className="text-[10px] text-[#9A3412] font-mono mt-0.5">
+                    {preset.w}×{preset.h} px
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Zone Tabs Bar + Manage Zones */}
       <div className="flex items-center justify-between gap-2 border-b border-[#FED7AA]/60 pb-2">
@@ -1222,9 +1245,6 @@ export const TableFloorView: React.FC<TableFloorViewProps> = ({
       {/* Main Floor Canvas */}
       <div
         ref={canvasRef}
-        onPointerMove={handlePointerMoveCanvas}
-        onPointerUp={handlePointerUpCanvas}
-        onPointerLeave={handlePointerUpCanvas}
         className={`relative flex-1 min-h-[540px] rounded-3xl border-2 overflow-auto bg-[#FFFDF9] transition-all p-4 shadow-inner ${
           isEditMode
             ? 'border-dashed border-[#F97316] bg-[radial-gradient(#FDBA74_1.5px,transparent_1.5px)] [background-size:20px_20px]'
