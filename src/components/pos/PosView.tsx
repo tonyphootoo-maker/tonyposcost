@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Product,
   ProductCategory,
@@ -16,6 +16,8 @@ import { OrderCartPanel } from './OrderCartPanel';
 import { PaymentModal } from './PaymentModal';
 import { SplitBillModal } from './SplitBillModal';
 import { KitchenTicketModal } from '../kitchen/KitchenTicketModal';
+import { QuickEditProductModal } from './QuickEditProductModal';
+import { showToast } from '../common/ToastContainer';
 import {
   Search,
   Plus,
@@ -39,6 +41,7 @@ import {
   Layers,
   Sparkles,
   AlertTriangle,
+  Edit3,
 } from 'lucide-react';
 
 interface PosViewProps {
@@ -91,6 +94,15 @@ export const PosView: React.FC<PosViewProps> = ({
   const [isKitchenTicketModalOpen, setIsKitchenTicketModalOpen] = useState(false);
   const [kitchenTicketItems, setKitchenTicketItems] = useState<OrderItem[]>([]);
   const [isKitchenReprint, setIsKitchenReprint] = useState(false);
+
+  // Quick Edit Modal & 2-Second Long-Press
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [pressingProductId, setPressingProductId] = useState<string | null>(null);
+  const [pressProgress, setPressProgress] = useState<number>(0);
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pressProgressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isLongPressTriggeredRef = useRef(false);
+  const startCoordRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // Category Manager Modal
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -319,6 +331,167 @@ export const PosView: React.FC<PosViewProps> = ({
     setProducts((prev) => prev.map((p) => (p.id === product.id ? updated : p)));
   };
 
+  // Clear any active 2-second hold timers and animations
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (pressProgressIntervalRef.current) {
+      clearInterval(pressProgressIntervalRef.current);
+      pressProgressIntervalRef.current = null;
+    }
+    setPressingProductId(null);
+    setPressProgress(0);
+  };
+
+  useEffect(() => {
+    return () => {
+      clearLongPress();
+    };
+  }, []);
+
+  // Long-press detection (~2 seconds hold to open quick edit modal)
+  const handlePointerDown = (product: Product, e: React.PointerEvent) => {
+    if (e.button !== 0) return; // Only primary mouse/touch button
+
+    clearLongPress();
+    isLongPressTriggeredRef.current = false;
+    startCoordRef.current = { x: e.clientX, y: e.clientY };
+    setPressingProductId(product.id);
+    setPressProgress(0);
+
+    const startTime = Date.now();
+    const LONG_PRESS_DURATION = 2000; // 2 seconds
+
+    pressProgressIntervalRef.current = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(100, (elapsed / LONG_PRESS_DURATION) * 100);
+      setPressProgress(progress);
+    }, 35);
+
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressTriggeredRef.current = true;
+      clearLongPress();
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        try {
+          navigator.vibrate(60);
+        } catch {
+          // ignore
+        }
+      }
+      setEditingProduct(product);
+    }, LONG_PRESS_DURATION);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!longPressTimerRef.current) return;
+    // Cancel if movement exceeds 12px (e.g. user is scrolling page on touch screen)
+    const dist = Math.hypot(e.clientX - startCoordRef.current.x, e.clientY - startCoordRef.current.y);
+    if (dist > 12) {
+      clearLongPress();
+    }
+  };
+
+  const handlePointerUp = () => {
+    clearLongPress();
+  };
+
+  const handlePointerLeave = () => {
+    clearLongPress();
+  };
+
+  const handlePointerCancel = () => {
+    clearLongPress();
+  };
+
+  const handleCardClick = (product: Product, e: React.MouseEvent) => {
+    if (isLongPressTriggeredRef.current) {
+      // Long press was just triggered, suppress normal cart addition
+      isLongPressTriggeredRef.current = false;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (!product.isAvailable) return;
+    handleProductCardClick(product);
+  };
+
+  const handleSaveEditedProduct = async (updated: Product) => {
+    await dbPut('products', updated);
+    setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+
+    // If edited product exists in active order cart, update its details
+    setCurrentOrder((prev) => {
+      const hasItem = prev.items.some((item) => item.productId === updated.id);
+      if (!hasItem) return prev;
+      const updatedItems = prev.items.map((item) => {
+        if (item.productId === updated.id) {
+          const varDelta = item.selectedVariant?.priceDelta || 0;
+          const modDelta = item.selectedModifiers?.reduce((acc, m) => acc + m.priceDelta, 0) || 0;
+          const newUnitPrice = updated.price + varDelta + modDelta;
+          return {
+            ...item,
+            productNameTh: updated.nameTh,
+            productNameEn: updated.nameEn,
+            basePrice: newUnitPrice,
+            unitCost: updated.cost + (item.selectedVariant?.costDelta || 0),
+            lineTotal: newUnitPrice * item.quantity,
+          };
+        }
+        return item;
+      });
+
+      const subtotal = updatedItems.reduce((sum, item) => sum + item.lineTotal, 0);
+      const totalCost = updatedItems.reduce((sum, item) => sum + item.unitCost * item.quantity, 0);
+      const discountedSubtotal = Math.max(0, subtotal - prev.discountAmount);
+      let serviceChargeAmount = 0;
+      if (settings?.serviceChargeEnabled && prev.orderType === 'dine_in') {
+        serviceChargeAmount = Number(
+          ((discountedSubtotal * (settings.serviceChargeRate || 10)) / 100).toFixed(2)
+        );
+      }
+      let vatAmount = 0;
+      let totalAmount = discountedSubtotal + serviceChargeAmount;
+      if (settings?.vatEnabled) {
+        const vatRate = settings.vatRate || 7;
+        if (settings.vatInclusive) {
+          vatAmount = Number(((totalAmount * vatRate) / (100 + vatRate)).toFixed(2));
+        } else {
+          vatAmount = Number(((totalAmount * vatRate) / 100).toFixed(2));
+          totalAmount += vatAmount;
+        }
+      }
+
+      return {
+        ...prev,
+        items: updatedItems,
+        subtotal,
+        serviceChargeAmount,
+        vatAmount,
+        totalAmount: Number(totalAmount.toFixed(2)),
+        totalCost: Number(totalCost.toFixed(2)),
+        grossProfit: Number((totalAmount - totalCost).toFixed(2)),
+      };
+    });
+
+    showToast(
+      language === 'th'
+        ? `บันทึกการแก้ไข "${updated.nameTh}" เรียบร้อยแล้ว`
+        : `Updated "${updated.nameTh}" successfully`,
+      'success'
+    );
+  };
+
+  const handleDeleteProduct = async (productId: string) => {
+    await dbDelete('products', productId);
+    setProducts((prev) => prev.filter((p) => p.id !== productId));
+    showToast(
+      language === 'th' ? 'ลบเมนูอาหารเรียบร้อยแล้ว' : 'Menu item removed',
+      'info'
+    );
+  };
+
   // Map icons for category tabs
   const getCategoryIcon = (iconName?: string) => {
     switch (iconName) {
@@ -514,6 +687,12 @@ export const PosView: React.FC<PosViewProps> = ({
                 <span>{currentOrder.tableName}</span>
               </div>
             )}
+
+            {/* Tip Badge: Hold card 2s to edit menu */}
+            <div className="hidden md:flex items-center gap-1.5 px-3 h-[48px] rounded-xl bg-[#FFF8EE] border border-[#FED7AA] text-[#9A3412] text-xs font-semibold shrink-0 shadow-2xs">
+              <Edit3 className="w-4 h-4 text-[#EA580C]" />
+              <span>{language === 'th' ? 'กดค้างที่การ์ด 2 วิ เพื่อแก้ไขเมนู' : 'Hold card 2s to edit'}</span>
+            </div>
           </div>
 
           {/* Section 7.10: Selling while no shift is open is allowed but shows a soft warning banner */}
@@ -609,14 +788,61 @@ export const PosView: React.FC<PosViewProps> = ({
                     .slice(0, 3)
                     .toUpperCase();
 
+                  const isHolding = pressingProductId === product.id;
+
                   return (
                     <div
                       key={product.id}
-                      onClick={() => !isSoldOut && handleProductCardClick(product)}
-                      className={`relative bg-[#FFFFFF] rounded-xl border border-[#FDBA74] overflow-hidden flex flex-col transition-all cursor-pointer shadow-xs active:bg-[#FFEDD5] active:ring-2 active:ring-[#F97316] ${
-                        isSoldOut ? 'opacity-70 cursor-not-allowed' : 'hover:border-[#EA580C] hover:shadow-sm'
+                      onPointerDown={(e) => handlePointerDown(product, e)}
+                      onPointerUp={handlePointerUp}
+                      onPointerLeave={handlePointerLeave}
+                      onPointerCancel={handlePointerCancel}
+                      onPointerMove={handlePointerMove}
+                      onClick={(e) => handleCardClick(product, e)}
+                      onContextMenu={(e) => e.preventDefault()}
+                      style={{ touchAction: 'pan-y', userSelect: 'none', WebkitUserSelect: 'none' }}
+                      className={`group relative bg-[#FFFFFF] rounded-xl border border-[#FDBA74] overflow-hidden flex flex-col transition-all cursor-pointer shadow-xs select-none ${
+                        isHolding ? 'ring-4 ring-[#EA580C] scale-[0.98] z-20' : ''
+                      } ${
+                        isSoldOut ? 'opacity-70 cursor-not-allowed' : 'hover:border-[#EA580C] hover:shadow-sm active:bg-[#FFEDD5]'
                       }`}
                     >
+                      {/* Visual Countdown Overlay for 2-Second Hold */}
+                      {isHolding && (
+                        <div className="absolute inset-0 z-30 bg-black/75 backdrop-blur-[2px] flex flex-col items-center justify-center p-3 text-white pointer-events-none transition-all">
+                          <div className="relative w-14 h-14 flex items-center justify-center">
+                            <svg className="w-14 h-14 -rotate-90 transform" viewBox="0 0 36 36">
+                              <path
+                                className="text-white/20"
+                                strokeWidth="3.5"
+                                stroke="currentColor"
+                                fill="none"
+                                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                              />
+                              <path
+                                className="text-[#F97316]"
+                                strokeWidth="3.5"
+                                strokeDasharray={`${pressProgress}, 100`}
+                                strokeLinecap="round"
+                                stroke="currentColor"
+                                fill="none"
+                                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                              />
+                            </svg>
+                            <Edit2 className="w-5 h-5 text-[#FED7AA] absolute" />
+                          </div>
+                          <span className="text-[12px] font-bold mt-2 text-center text-white drop-shadow-md">
+                            {language === 'th' ? 'กดค้าง 2 วิ เพื่อแก้ไข' : 'Hold 2s to edit'}
+                          </span>
+                          <div className="w-full bg-white/30 h-1.5 rounded-full overflow-hidden mt-1.5 max-w-[100px]">
+                            <div
+                              className="bg-[#EA580C] h-full transition-all duration-75"
+                              style={{ width: `${pressProgress}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+
                       {/* Top Photo Section (~65% height, 4:3 aspect ratio) */}
                       <div className="relative aspect-4/3 w-full bg-[#FEF9C3] overflow-hidden flex items-center justify-center">
                         {product.image ? (
@@ -655,11 +881,26 @@ export const PosView: React.FC<PosViewProps> = ({
                           </div>
                         )}
 
+                        {/* Quick edit shortcut button (desktop hover / convenient click) */}
+                        <button
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingProduct(product);
+                          }}
+                          className="absolute top-1.5 left-1.5 p-1 rounded-lg bg-white/90 hover:bg-white text-[#EA580C] shadow-xs border border-[#FED7AA] opacity-0 group-hover:opacity-100 sm:opacity-80 transition-opacity cursor-pointer z-10"
+                          title={language === 'th' ? 'แก้ไขเมนู (หรือกดค้างที่การ์ด 2 วินาที)' : 'Edit menu (or hold 2s)'}
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+
                         {/* Long-press / sold out toggle button */}
                         <button
                           type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
                           onClick={(e) => handleToggleSoldOut(product, e)}
-                          className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-white/80 hover:bg-white text-[#374151] backdrop-blur-xs border border-neutral-300"
+                          className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-white/80 hover:bg-white text-[#374151] backdrop-blur-xs border border-neutral-300 cursor-pointer z-10"
                           title="สลับสถานะ มีของ/หมด"
                         >
                           {product.isAvailable ? (language === 'th' ? 'มีของ' : 'In stock') : (language === 'th' ? 'หมด' : 'Out')}
@@ -1334,6 +1575,19 @@ export const PosView: React.FC<PosViewProps> = ({
           settings={settings}
           isReprint={isKitchenReprint}
           onClose={() => setIsKitchenTicketModalOpen(false)}
+        />
+      )}
+
+      {/* Quick Edit Product Modal (Triggered by 2-second hold on food card or quick edit button) */}
+      {editingProduct && (
+        <QuickEditProductModal
+          key={editingProduct.id}
+          product={editingProduct}
+          categories={categories}
+          isOpen={!!editingProduct}
+          onClose={() => setEditingProduct(null)}
+          onSave={handleSaveEditedProduct}
+          onDelete={handleDeleteProduct}
         />
       )}
     </div>
