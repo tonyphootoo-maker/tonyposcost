@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Product, ProductCategory } from '../../types';
 import { useTranslation } from '../../i18n';
 import { compressImage } from '../../utils/imageCompressor';
-import { X, Check, Trash2, Edit3, DollarSign, Tag, UtensilsCrossed, AlertTriangle, Upload, Image as ImageIcon } from 'lucide-react';
+import { X, Check, Trash2, Edit3, DollarSign, Tag, UtensilsCrossed, AlertTriangle, Upload, Image as ImageIcon, Plus } from 'lucide-react';
 
 interface QuickEditProductModalProps {
   product: Product;
@@ -110,6 +110,8 @@ export const QuickEditProductModal: React.FC<QuickEditProductModalProps> = ({
     }
   };
 
+  const isNewProduct = !product.nameTh;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-fade-in select-none">
       <div className="bg-[#FFFFFF] border-2 border-[#FED7AA] rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -117,14 +119,24 @@ export const QuickEditProductModal: React.FC<QuickEditProductModalProps> = ({
         <div className="p-4 sm:p-5 border-b border-[#FED7AA] bg-[#FFF8EE] flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-[#EA580C] text-white flex items-center justify-center shadow-xs">
-              <Edit3 className="w-5 h-5" />
+              {isNewProduct ? <Plus className="w-5 h-5" /> : <Edit3 className="w-5 h-5" />}
             </div>
             <div>
               <h3 className="font-extrabold text-lg text-[#111827] leading-tight">
-                {language === 'th' ? 'แก้ไขเมนูอาหาร' : 'Edit Menu Item'}
+                {isNewProduct
+                  ? language === 'th'
+                    ? 'เพิ่มเมนูอาหารใหม่'
+                    : 'Add New Menu Item'
+                  : language === 'th'
+                  ? 'แก้ไขเมนูอาหาร'
+                  : 'Edit Menu Item'}
               </h3>
               <p className="text-xs text-[#6B7280] mt-0.5">
-                {language === 'th'
+                {isNewProduct
+                  ? language === 'th'
+                    ? 'ใส่เมนูอาหารในหมวดหมู่นี้ได้ไม่จำกัดจำนวน'
+                    : 'Add unlimited menu items to this category'
+                  : language === 'th'
                   ? 'แก้ไขชื่อและราคาขายได้ทันที โดยไม่ต้องเข้าหน้าตั้งค่า'
                   : 'Quickly edit name and price without opening settings'}
               </p>
@@ -362,7 +374,7 @@ export const QuickEditProductModal: React.FC<QuickEditProductModalProps> = ({
 
           {/* Action Buttons */}
           <div className="flex items-center justify-between pt-3 border-t border-[#FED7AA] gap-2">
-            {onDelete ? (
+            {!isNewProduct && onDelete ? (
               <button
                 type="button"
                 onClick={handleDelete}
@@ -392,7 +404,17 @@ export const QuickEditProductModal: React.FC<QuickEditProductModalProps> = ({
                 className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white font-extrabold text-xs shadow-sm cursor-pointer min-h-[44px]"
               >
                 <Check className="w-4 h-4" />
-                <span>{isSaving ? 'กำลังบันทึก...' : language === 'th' ? 'บันทึกค่าที่แก้ไข' : 'Save Changes'}</span>
+                <span>
+                  {isSaving
+                    ? 'กำลังบันทึก...'
+                    : isNewProduct
+                    ? language === 'th'
+                      ? '+ บันทึกเมนูใหม่'
+                      : '+ Save New Menu'
+                    : language === 'th'
+                    ? 'บันทึกค่าที่แก้ไข'
+                    : 'Save Changes'}
+                </span>
               </button>
             </div>
           </div>

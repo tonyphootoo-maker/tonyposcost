@@ -19,7 +19,6 @@ import { KitchenTicketModal } from '../kitchen/KitchenTicketModal';
 import { QuickEditProductModal } from './QuickEditProductModal';
 import { showToast } from '../common/ToastContainer';
 import {
-  Search,
   Plus,
   UtensilsCrossed,
   X,
@@ -42,6 +41,7 @@ import {
   Sparkles,
   AlertTriangle,
   Edit3,
+  Grid,
 } from 'lucide-react';
 
 interface PosViewProps {
@@ -68,10 +68,9 @@ export const PosView: React.FC<PosViewProps> = ({
   const { t, language, formatCurrency } = useTranslation();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<ProductCategory[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [activeGroupName, setActiveGroupName] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
 
   // Mobile Order Sheet toggle
   const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
@@ -155,7 +154,16 @@ export const PosView: React.FC<PosViewProps> = ({
     const sortedCategories = [...cList].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
     setProducts(pList);
     setCategories(sortedCategories);
+    if (sortedCategories.length > 0) {
+      setSelectedCategory((prev) => (!prev || prev === 'all' ? sortedCategories[0].id : prev));
+    }
   };
+
+  useEffect(() => {
+    if (categories.length > 0 && (!selectedCategory || selectedCategory === 'all')) {
+      setSelectedCategory(categories[0].id);
+    }
+  }, [categories, selectedCategory]);
 
   const handleProductCardClick = (product: Product) => {
     if (!product.isAvailable) return;
@@ -417,9 +425,41 @@ export const PosView: React.FC<PosViewProps> = ({
     handleProductCardClick(product);
   };
 
+  const handleAddNewProductToCurrentCategory = () => {
+    const currentCatId =
+      selectedCategory && selectedCategory !== 'all'
+        ? selectedCategory
+        : categories[0]?.id || 'cat_food';
+
+    const newProd: Product = {
+      id: `prod_${Date.now()}`,
+      nameTh: '',
+      nameEn: '',
+      descriptionTh: '',
+      descriptionEn: '',
+      categoryId: currentCatId,
+      groupId: activeGroupId || undefined,
+      groupName: activeGroupName || undefined,
+      price: 60,
+      cost: 25,
+      isAvailable: true,
+      image: '',
+      kitchenStation: 'kitchen',
+      variants: [],
+      modifierGroups: [],
+    };
+    setEditingProduct(newProd);
+  };
+
   const handleSaveEditedProduct = async (updated: Product) => {
     await dbPut('products', updated);
-    setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    setProducts((prev) => {
+      const exists = prev.some((p) => p.id === updated.id);
+      if (exists) {
+        return prev.map((p) => (p.id === updated.id ? updated : p));
+      }
+      return [...prev, updated];
+    });
 
     // If edited product exists in active order cart, update its details
     setCurrentOrder((prev) => {
@@ -518,10 +558,16 @@ export const PosView: React.FC<PosViewProps> = ({
     }
   };
 
+  // Current active category object
+  const currentCategoryObj = useMemo(() => {
+    return categories.find((c) => c.id === selectedCategory) || categories[0] || null;
+  }, [categories, selectedCategory]);
+
   // Extract groups inside selected category
   const groupsInSelectedCategory = useMemo(() => {
-    if (selectedCategory === 'all') return [];
-    const prods = products.filter((p) => p.categoryId === selectedCategory && p.groupId);
+    const targetCatId = selectedCategory || (categories[0]?.id || '');
+    if (!targetCatId) return [];
+    const prods = products.filter((p) => p.categoryId === targetCatId && p.groupId);
     const groupMap = new Map<string, string>();
     prods.forEach((p) => {
       if (p.groupId && p.groupName) {
@@ -529,30 +575,23 @@ export const PosView: React.FC<PosViewProps> = ({
       }
     });
     return Array.from(groupMap.entries()).map(([id, name]) => ({ id, name }));
-  }, [products, selectedCategory]);
+  }, [products, selectedCategory, categories]);
 
-  // Filtered Products
+  // Filtered Products (by selected category with unlimited count)
   const filteredProducts = useMemo(() => {
-    let list = products;
+    const targetCatId = selectedCategory || (categories[0]?.id || '');
+    if (!targetCatId) return [];
 
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(
-        (p) =>
-          p.nameTh.toLowerCase().includes(q) ||
-          p.nameEn.toLowerCase().includes(q) ||
-          (p.tags && p.tags.some((t) => t.toLowerCase().includes(q)))
-      );
-    } else {
-      if (activeGroupId) {
-        list = list.filter((p) => p.groupId === activeGroupId);
-      } else if (selectedCategory !== 'all') {
-        list = list.filter((p) => p.categoryId === selectedCategory && !p.groupId);
-      }
+    let list = products.filter((p) => p.categoryId === targetCatId);
+
+    if (activeGroupId) {
+      list = list.filter((p) => p.groupId === activeGroupId);
+    } else if (groupsInSelectedCategory.length > 0) {
+      list = list.filter((p) => !p.groupId);
     }
 
     return list;
-  }, [products, searchQuery, selectedCategory, activeGroupId]);
+  }, [products, selectedCategory, activeGroupId, categories, groupsInSelectedCategory]);
 
   // Count item occurrences in current cart
   const getItemCartQuantity = (productId: string): number => {
@@ -613,7 +652,10 @@ export const PosView: React.FC<PosViewProps> = ({
     if (!ok) return;
 
     await dbDelete('categories', catId);
-    if (selectedCategory === catId) setSelectedCategory('all');
+    if (selectedCategory === catId) {
+      const remaining = categories.filter((c) => c.id !== catId);
+      setSelectedCategory(remaining[0]?.id || '');
+    }
     await loadCatalog();
   };
 
@@ -638,60 +680,65 @@ export const PosView: React.FC<PosViewProps> = ({
       <div className="flex-1 flex overflow-hidden">
         {/* LEFT COLUMN: MENU GRID (~68% width on desktop/tablet) */}
         <div className="flex-1 lg:w-[68%] flex flex-col min-w-0 bg-[#FFF8EE] border-r border-[#FED7AA]">
-          {/* Top Search & Filter Bar (Large, 48px height) */}
-          <div className="p-3 bg-[#FFFFFF] border-b border-[#FED7AA] flex items-center gap-3">
-            {activeGroupId ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveGroupId(null);
-                  setActiveGroupName(null);
-                }}
-                className="h-[48px] px-4 rounded-xl bg-[#FFEDD5] text-[#9A3412] font-bold text-sm flex items-center gap-1.5 hover:bg-[#FDBA74] transition cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span>{language === 'th' ? '‹ กลับหมวดหลัก' : '‹ Back'}</span>
-              </button>
-            ) : null}
-
-            <div className="relative flex-1">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-[#9CA3AF]" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={
-                  activeGroupName
-                    ? `${language === 'th' ? 'ค้นหาในกลุ่ม' : 'Search in'} ${activeGroupName}...`
-                    : language === 'th'
-                    ? 'ค้นหาชื่อเมนู, วัตถุดิบ, หรือแท็ก...'
-                    : 'Search dishes, ingredients, or tags...'
-                }
-                className="w-full h-[48px] pl-10 pr-10 rounded-xl border border-[#FDBA74] bg-[#FFFFFF] text-[#111827] text-base placeholder-[#6B7280] focus:ring-2 focus:ring-[#F97316] focus:outline-none"
-              />
-              {searchQuery && (
+          {/* Top Category Header & Action Bar (Search bar removed completely) */}
+          <div className="p-3 bg-[#FFFFFF] border-b border-[#FED7AA] flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5 min-w-0">
+              {activeGroupId ? (
                 <button
                   type="button"
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-[#6B7280] hover:text-[#111827]"
+                  onClick={() => {
+                    setActiveGroupId(null);
+                    setActiveGroupName(null);
+                  }}
+                  className="h-[42px] px-3.5 rounded-xl bg-[#FFEDD5] text-[#9A3412] font-bold text-sm flex items-center gap-1.5 hover:bg-[#FDBA74] transition cursor-pointer shrink-0"
                 >
-                  <X className="w-4 h-4" />
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>{language === 'th' ? '‹ กลับหมวดหลัก' : '‹ Back'}</span>
                 </button>
-              )}
+              ) : null}
+
+              {/* Active Category Title & Item Count */}
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-extrabold text-base sm:text-lg text-[#111827] truncate">
+                  {currentCategoryObj
+                    ? language === 'th'
+                      ? currentCategoryObj.nameTh
+                      : currentCategoryObj.nameEn || currentCategoryObj.nameTh
+                    : language === 'th'
+                    ? 'รายการอาหาร'
+                    : 'Menu Items'}
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full bg-[#FFEDD5] text-[#9A3412] text-xs font-bold border border-[#FDBA74]/60 shrink-0">
+                  {filteredProducts.length} {language === 'th' ? 'รายการ (ไม่จำกัด)' : 'items (unlimited)'}
+                </span>
+              </div>
             </div>
 
-            {/* Active Table Quick Indicator */}
-            {currentOrder.tableName && (
-              <div className="hidden sm:flex items-center gap-1.5 px-3 h-[48px] rounded-xl bg-[#FFEDD5] border border-[#FDBA74] text-[#9A3412] font-bold text-sm shrink-0">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#EA580C]"></span>
-                <span>{currentOrder.tableName}</span>
-              </div>
-            )}
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Active Table Quick Indicator */}
+              {currentOrder.tableName && (
+                <div className="flex items-center gap-1.5 px-3 h-[42px] rounded-xl bg-[#FFEDD5] border border-[#FDBA74] text-[#9A3412] font-bold text-xs sm:text-sm shrink-0">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#EA580C]"></span>
+                  <span>{currentOrder.tableName}</span>
+                </div>
+              )}
 
-            {/* Tip Badge: Hold card 2s to edit menu */}
-            <div className="hidden md:flex items-center gap-1.5 px-3 h-[48px] rounded-xl bg-[#FFF8EE] border border-[#FED7AA] text-[#9A3412] text-xs font-semibold shrink-0 shadow-2xs">
-              <Edit3 className="w-4 h-4 text-[#EA580C]" />
-              <span>{language === 'th' ? 'กดค้างที่การ์ด 2 วิ เพื่อแก้ไขเมนู' : 'Hold card 2s to edit'}</span>
+              {/* Add New Menu into Current Category (Unlimited Menu Items) */}
+              <button
+                type="button"
+                onClick={handleAddNewProductToCurrentCategory}
+                className="h-[42px] px-3.5 rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold text-xs sm:text-sm flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer shrink-0"
+                title={language === 'th' ? 'เพิ่มเมนูใหม่ในหมวดหมู่นี้ (ไม่จำกัดจำนวน)' : 'Add menu item to this category (unlimited)'}
+              >
+                <Plus className="w-4 h-4" />
+                <span>{language === 'th' ? '+ เพิ่มเมนูในหมวด' : '+ Add Item'}</span>
+              </button>
+
+              {/* Tip Badge: Hold card 2s to edit menu */}
+              <div className="hidden lg:flex items-center gap-1.5 px-3 h-[42px] rounded-xl bg-[#FFF8EE] border border-[#FED7AA] text-[#9A3412] text-xs font-semibold shrink-0 shadow-2xs">
+                <Edit3 className="w-4 h-4 text-[#EA580C]" />
+                <span>{language === 'th' ? 'กดค้าง 2 วิ เพื่อแก้ไข' : 'Hold 2s to edit'}</span>
+              </div>
             </div>
           </div>
 
@@ -733,7 +780,7 @@ export const PosView: React.FC<PosViewProps> = ({
           {/* Menu Tiles Grid */}
           <div className="flex-1 overflow-y-auto p-3">
             {/* Group Tiles (e.g. "ชุดเซ็ตสุดคุ้ม >") if any in this category and not yet inside a group */}
-            {!activeGroupId && !searchQuery && groupsInSelectedCategory.length > 0 && (
+            {!activeGroupId && groupsInSelectedCategory.length > 0 && (
               <div className="mb-4">
                 <h4 className="text-xs font-bold text-[#6B7280] uppercase tracking-wider mb-2">
                   {language === 'th' ? 'กลุ่มเมนูพิเศษ / เซ็ต' : 'Special Groups & Sets'}
@@ -771,13 +818,21 @@ export const PosView: React.FC<PosViewProps> = ({
               <div className="h-64 flex flex-col items-center justify-center text-center p-6 bg-[#FFF3E0] rounded-2xl border border-dashed border-[#FED7AA]">
                 <UtensilsCrossed className="w-12 h-12 text-[#F97316] mb-2 opacity-50" />
                 <p className="text-[18px] font-bold text-[#111827]">
-                  {language === 'th' ? 'ไม่พบรายการอาหาร' : 'No menu items found'}
+                  {language === 'th' ? 'ยังไม่มีเมนูในหมวดหมู่นี้' : 'No menu items in this category'}
                 </p>
-                <p className="text-[14px] text-[#6B7280] mt-1">
+                <p className="text-[14px] text-[#6B7280] mt-1 mb-4">
                   {language === 'th'
-                    ? 'ลองค้นหาด้วยคำอื่น หรือเลือกหมวดหมู่อื่น'
-                    : 'Try another search term or category'}
+                    ? 'คุณสามารถเพิ่มเมนูอาหารในหมวดหมู่นี้ได้ไม่จำกัดจำนวน'
+                    : 'You can add unlimited menu items to this category'}
                 </p>
+                <button
+                  type="button"
+                  onClick={handleAddNewProductToCurrentCategory}
+                  className="px-4 py-2.5 rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white font-bold text-sm flex items-center gap-2 shadow-xs transition cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>{language === 'th' ? '+ เพิ่มเมนูแรกในหมวดนี้' : '+ Add first menu item'}</span>
+                </button>
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
@@ -929,6 +984,24 @@ export const PosView: React.FC<PosViewProps> = ({
                     </div>
                   );
                 })}
+
+                {/* Unlimited Add Menu Card at end of grid */}
+                <button
+                  type="button"
+                  onClick={handleAddNewProductToCurrentCategory}
+                  className="min-h-[140px] p-4 rounded-xl border-2 border-dashed border-[#FDBA74] bg-[#FFF8EE]/60 hover:bg-[#FFEDD5] hover:border-[#EA580C] transition-all flex flex-col items-center justify-center text-center group cursor-pointer"
+                  title={language === 'th' ? 'เพิ่มเมนูในหมวดนี้ (ไม่จำกัดจำนวน)' : 'Add menu item (unlimited)'}
+                >
+                  <div className="w-11 h-11 rounded-xl bg-[#FFEDD5] text-[#EA580C] group-hover:bg-[#EA580C] group-hover:text-white transition-all flex items-center justify-center mb-2 shadow-2xs">
+                    <Plus className="w-6 h-6" />
+                  </div>
+                  <span className="font-extrabold text-sm text-[#9A3412] group-hover:text-[#EA580C]">
+                    {language === 'th' ? '+ เพิ่มเมนูใหม่' : '+ Add Item'}
+                  </span>
+                  <span className="text-[11px] text-[#9CA3AF] mt-0.5">
+                    {language === 'th' ? 'ใส่ได้ไม่จำกัด' : 'Unlimited items'}
+                  </span>
+                </button>
               </div>
             )}
           </div>
@@ -1045,23 +1118,16 @@ export const PosView: React.FC<PosViewProps> = ({
 
         {/* Center: Horizontally Scrollable Category Tabs */}
         <div className="flex-1 overflow-x-auto flex items-stretch no-scrollbar scroll-smooth">
-          {/* Tab 1: "ทั้งหมด / All" */}
+          {/* Floor Plan / การ์ดผังโต๊ะ (แทนการ์ดทั้งหมด) */}
           <button
             type="button"
-            onClick={() => {
-              setSelectedCategory('all');
-              setActiveGroupId(null);
-              setActiveGroupName(null);
-            }}
-            className={`min-w-[104px] px-3 flex flex-col items-center justify-center transition-all cursor-pointer border-r border-[#FED7AA]/60 ${
-              selectedCategory === 'all'
-                ? 'bg-[#FFEDD5] border-t-4 border-t-[#F97316] text-[#9A3412] font-bold'
-                : 'text-[#374151] hover:bg-[#FFF8EE]'
-            }`}
+            onClick={onOpenTableFloor}
+            className="min-w-[104px] px-3 flex flex-col items-center justify-center transition-all cursor-pointer border-r border-[#FED7AA]/60 text-[#374151] hover:bg-[#FFEDD5] active:bg-[#FED7AA]"
+            title={language === 'th' ? 'ดูผังโต๊ะ' : 'Table Floor Plan'}
           >
-            <Sparkles className="w-7 h-7 mb-1" />
-            <span className="text-[16px] font-bold leading-tight text-center">
-              {language === 'th' ? 'ทั้งหมด' : 'All'}
+            <Grid className="w-7 h-7 mb-1 text-[#EA580C]" />
+            <span className="text-[16px] font-bold leading-tight text-center text-[#111827]">
+              {language === 'th' ? 'ผังโต๊ะ' : 'Tables'}
             </span>
           </button>
 
